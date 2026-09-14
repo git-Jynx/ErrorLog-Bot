@@ -1,0 +1,20 @@
+# 비밀 정보 (절대 커밋 금지)
+.env
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.venv/
+
+# macOS
+.DS_Store
+
+# 개인 재사용 템플릿 (이 프로젝트와 무관 - 비공개)
+README_BLUEPRINT.md
+
+# 저장에 실패한 기록의 로컬 백업 (개인 학습 내용이 들어감 - 절대 커밋 금지)
+pending_records.json
+pending_records.json.tmp
+pending_records.json.broken
+.claude/
+.claude/
