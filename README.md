@@ -1036,10 +1036,10 @@ $$
 cd ~/Desktop/cpa-wrongnote-bot
 ```
 
-**윈도우 (PowerShell) 예시 (폴더를 `C:\` 바로 아래에 그대로 두셨다면):**
+**윈도우 (PowerShell) 예시 (폴더를 바탕화면에 그대로 두셨다면):**
 
 ```powershell
-cd C:\cpa-wrongnote-bot
+cd $HOME\Desktop\cpa-wrongnote-bot
 ```
 
 > 폴더 이름을 바꾸셨거나 다른 위치에 두셨다면 §1-3의 "드래그" 방법을 쓰세요.
