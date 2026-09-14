@@ -409,16 +409,15 @@ git clone https://github.com/git-wj/cpa-wrongnote-bot.git
 <details>
 <summary>Git을 설치하지 않았다면 — ZIP으로 받는 방법</summary>
 
-1. 웹브라우저에서 <https://github.com/git-wj/cpa-wrongnote-bot> 를 엽니다.
-2. 초록색 **`Code`** 버튼을 누릅니다.
-3. **`Download ZIP`**을 누릅니다.
+1. 웹브라우저에서 https://github.com/git-wj/cpa-wrongnote-bot 를 엽니다.
+2. 초록색 `Code` 버튼을 누릅니다.
+3. *`Download ZIP`*을 누릅니다.
 4. 내려받은 ZIP 파일을 더블클릭해 압축을 풉니다.
-5. 압축을 푼 폴더를 위에서 `cd`로 이동해 둔 위치(맥은 바탕화면, 윈도우는 `C:\`)로
-   옮깁니다.
+5. 압축을 푼 폴더를 **바탕화면**처럼 잘 아는 곳으로 옮깁니다.
 
 압축을 푼 폴더 이름이 `cpa-wrongnote-bot-main`처럼 `-main`이 붙어 있을 수
-있습니다. 그렇다면 아래 명령에서 폴더 이름을 그에 맞게 바꿔 쓰세요.
-
+있습니다. 폴더 이름을 바꾸거나 위치를 바꾸셨다면, 이후 `cd` 명령은
+§1-3의 "드래그" 방법을 쓰시면 폴더 이름과 무관하게 이동할 수 있습니다.
 </details>
 
 #### ② 프로젝트 폴더로 이동
@@ -627,14 +626,15 @@ git clone https://github.com/git-wj/cpa-wrongnote-bot.git
 <details>
 <summary>Git을 설치하지 않았다면 — ZIP으로 받는 방법</summary>
 
-1. 웹브라우저에서 <https://github.com/git-wj/cpa-wrongnote-bot> 를 엽니다.
-2. 초록색 **`Code`** 버튼을 누릅니다.
-3. **`Download ZIP`**을 누릅니다.
+1. 웹브라우저에서 https://github.com/git-wj/cpa-wrongnote-bot 를 엽니다.
+2. 초록색 `Code` 버튼을 누릅니다.
+3. *`Download ZIP`*을 누릅니다.
 4. 내려받은 ZIP 파일을 더블클릭해 압축을 풉니다.
+5. 압축을 푼 폴더를 **바탕화면**처럼 잘 아는 곳으로 옮깁니다.
 
 압축을 푼 폴더 이름이 `cpa-wrongnote-bot-main`처럼 `-main`이 붙어 있을 수
-있습니다. 그래도 동작에는 문제가 없습니다.
-
+있습니다. 폴더 이름을 바꾸거나 위치를 바꾸셨다면, 이후 `cd` 명령은
+§1-3의 "드래그" 방법을 쓰시면 폴더 이름과 무관하게 이동할 수 있습니다.
 </details>
 
 #### ② 폴더를 VS Code로 열기
