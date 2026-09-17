@@ -17,7 +17,7 @@ from uuid import uuid4
 import yaml
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -990,12 +990,82 @@ async def send(session, context, chat_id, text, keyboard, query=None):
         return
 
     if session["msg_id"]:
+        # 옛 화면 지우기는 대화창을 깔끔하게 유지하기 위한 보조 동작일 뿐이다.
+        # 실패해도 본래 보내려던 메시지를 막지 않는다. 예전에는 BadRequest만
+        # 넘겨서, 순간적인 네트워크 끊김(NetworkError)이 나면 그 뒤의
+        # "저장 완료" 표시까지 통째로 중단됐다.
+        # 사용자에게는 알리지 않는다. 옛 메시지가 하나 더 남는 정도의 일이다.
         try:
             await context.bot.delete_message(chat_id, session["msg_id"])
-        except BadRequest:
-            pass
+        except Exception as e:
+            print(f"[안내] 옛 화면을 지우지 못했습니다(대화창에 그대로 남습니다): {e}")
     sent = await context.bot.send_message(chat_id, text, reply_markup=keyboard)
     session["msg_id"] = sent.message_id
+
+
+# 저장 완료 화면처럼 놓치면 곤란한 전송에만 쓰는 재시도 (명세서 밖 · 사고 대응).
+# 텔레그램 통신에는 라이브러리 차원의 재시도가 없다. python-telegram-bot 22.5의
+# HTTPXRequest에는 재시도 옵션 자체가 없고, 그 아래 httpx의 연결 재시도도 기본이 0이다.
+# 모든 전송에 일괄로 붙이지 않고 이 경로에서만 쓴다.
+SAVED_SEND_TRIES = 3       # 처음 1회 + 재시도 2회
+SAVED_SEND_FIRST_WAIT = 1.0  # 1 → 2초
+
+
+async def send_saved(session, context, chat_id, text, keyboard, query=None):
+    """저장 완료 화면을 보낸다. 순간적인 끊김이면 잠깐 기다렸다 다시 시도한다.
+
+    여기서 다시 보내도 노션에 중복 저장될 일은 없다. 노션 저장은 이미 끝났고
+    이 함수는 화면만 다룬다.
+    """
+    for attempt in range(SAVED_SEND_TRIES):
+        try:
+            await send(session, context, chat_id, text, keyboard, query)
+            return
+        except (NetworkError, TimedOut) as e:
+            if attempt == SAVED_SEND_TRIES - 1:
+                raise
+            wait = SAVED_SEND_FIRST_WAIT * (2 ** attempt)
+            print(
+                f"[안내] 저장 완료 화면을 보내지 못했습니다. {wait:.0f}초 뒤 다시 시도합니다"
+                f" ({attempt + 1}/{SAVED_SEND_TRIES - 1}번째): {e}"
+            )
+            await asyncio.sleep(wait)
+
+
+def build_saved_unshown_text(url):
+    """노션 저장은 끝났는데 화면 표시만 실패한 경우의 전용 안내.
+
+    일반 오류 안내와 반드시 구분해야 한다. 일반 안내처럼 "다시 시도"로 읽히면
+    사용자가 같은 내용을 한 번 더 보내 노션에 중복 저장된다.
+    """
+    lines = [
+        "✅ 노션에는 정상적으로 저장되었습니다.",
+        "화면 표시에만 실패했습니다.",
+        "",
+        "⚠️ 다시 보내지 마세요. 같은 내용이 두 번 저장됩니다.",
+        "노션에서 확인해 보시고, /new 로 다음 기록을 시작하세요.",
+    ]
+    if url:
+        lines += ["", f"저장된 페이지: {url}"]
+    return "\n".join(lines)
+
+
+async def report_saved_unshown(context, chat_id, url, error):
+    """전용 안내를 보내고, 그 전송조차 실패하면 터미널에 남긴다.
+
+    사용자가 나중에 터미널 창을 보고 "저장은 됐구나"를 알 수 있어야 한다.
+    """
+    print("[안내] 노션 저장은 성공했지만 저장 완료 화면을 보내지 못했습니다.")
+    print(f"   원인: {error}")
+    if url:
+        print(f"   저장된 노션 페이지: {url}")
+    print("   같은 내용을 다시 보내지 마십시오. 노션에 두 번 저장됩니다.")
+
+    try:
+        await context.bot.send_message(chat_id, build_saved_unshown_text(url))
+    except Exception as e:
+        print(f"[안내] 위 내용을 텔레그램으로도 보내지 못했습니다: {e}")
+        print("   텔레그램 화면에는 아무 안내도 뜨지 않았습니다. 위 내용을 참고하십시오.")
 
 
 async def show(session, context, chat_id, query=None):
@@ -1057,7 +1127,16 @@ async def do_save(session, context, chat_id, query=None):
     if notes:
         # 수식이 코드블록으로 바뀐 안내 (명세서 §13-3). 저장 자체는 성공이다.
         text += "\n" + "\n".join(notes)
-    await send(session, context, chat_id, text, build_saved_keyboard(url), query)
+
+    # 여기부터는 노션 저장이 이미 끝난 뒤다. 화면을 못 띄웠다고 해서 일반 오류로
+    # 다루면 사용자가 다시 시도해 노션에 중복 저장된다. 전용 안내로 갈라낸다.
+    try:
+        await send_saved(session, context, chat_id, text, build_saved_keyboard(url), query)
+    except Exception as e:
+        await report_saved_unshown(context, chat_id, url, e)
+        # 세션을 정리해 [뒤로] 같은 버튼이 어중간한 상태로 남지 않게 한다.
+        # 남겨 두면 옛 화면의 버튼이 아무 반응도 하지 않는 것처럼 보인다.
+        context.user_data.pop("session", None)
 
 
 def advance(session):
@@ -2460,6 +2539,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if session["step"] >= len(STEPS):
+        # 저장이 끝난 기록의 옛 입력 화면에 남아 있는 버튼을 누른 경우다.
+        # 예전에는 조용히 무시해서 [⬅️ 뒤로]가 아무 반응이 없는 것처럼 보였다
+        # (화면 정리에 실패해 옛 화면이 지워지지 않고 남았을 때).
+        await query.edit_message_text(
+            "이미 저장이 끝난 기록의 지난 화면입니다.\n"
+            "같은 내용을 다시 보내면 노션에 두 번 저장됩니다.\n"
+            "노션을 확인해 보시고 /new 로 다음 기록을 시작해 주세요."
+        )
         return
 
     step = STEPS[session["step"]]
@@ -2674,11 +2761,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # 전역 오류 처리
 # ============================================================
+# 버튼을 눌렀을 때뿐 아니라 글을 보낸 뒤에도 뜨는 안내다. 특정 버튼을 다시
+# 누르라고 하지 않는다. 저장 단계에서 났다면 노션에 이미 들어갔을 수 있으므로,
+# 다시 시도하기 전에 노션을 확인하라고 먼저 안내한다 (중복 저장 방지).
 UNEXPECTED_TEXT = (
     "⚠️ 예상치 못한 오류가 발생했습니다.\n"
     "입력하신 내용은 그대로 남아 있습니다.\n\n"
-    "위 화면의 버튼을 한 번 더 눌러 보시고,\n"
-    "그래도 같은 일이 생기면 /new 로 다시 시작해 주세요.\n"
+    "저장 단계에서 생긴 오류라면 노션에는 이미 들어갔을 수 있습니다.\n"
+    "같은 내용을 다시 보내기 전에 노션을 먼저 확인해 주세요.\n"
+    "이미 있다면 다시 보내지 마시고 /new 로 다음 기록을 시작하세요.\n\n"
     "(오류 원문은 봇을 켜 둔 터미널 창에 적혀 있습니다.)"
 )
 
