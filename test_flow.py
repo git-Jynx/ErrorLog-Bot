@@ -21,6 +21,8 @@ import traceback
 from datetime import datetime
 from types import SimpleNamespace
 
+from telegram.error import NetworkError
+
 import bot
 import check_notion
 import content_format
@@ -95,6 +97,8 @@ class Screen:
         self.user_data = {}
         self.msg_id = 0
         self.documents = []
+        # 보낸 순서대로 쌓아 둔다. 오류 안내와 그 뒤 다시 띄운 화면을 함께 봐야 한다.
+        self.messages = []
 
 
 class FakeBot:
@@ -106,6 +110,7 @@ class FakeBot:
         self.screen.text = text
         self.screen.markup = reply_markup
         self.screen.msg_id += 1
+        self.screen.messages.append(text)
         return SimpleNamespace(message_id=self.screen.msg_id)
 
     async def send_document(self, chat_id, document=None, filename=None):
@@ -116,16 +121,22 @@ class FakeBot:
 
 
 class FakeQuery:
-    def __init__(self, screen, data):
+    def __init__(self, screen, data, answer_fails=False):
         self.screen = screen
         self.data = data
+        # 실제 사고와 같은 상황: 로딩 표시를 지우는 보조 동작만 네트워크로 끊긴다.
+        self.answer_fails = answer_fails
+        self.answered = False
 
     async def answer(self):
-        pass
+        self.answered = True
+        if self.answer_fails:
+            raise NetworkError("httpx.ConnectError (테스트용)")
 
     async def edit_message_text(self, text, reply_markup=None):
         self.screen.text = text
         self.screen.markup = reply_markup
+        self.screen.messages.append(text)
 
 
 class FakeMessage:
@@ -157,9 +168,20 @@ class Flow:
     async def start(self):
         await bot.cmd_new(self._update(), self.context)
 
-    async def press(self, label):
+    async def press(self, label, answer_fails=False):
         button = self.find(label)
-        await bot.on_button(self._update(query=FakeQuery(self.screen, button.callback_data)), self.context)
+        query = FakeQuery(self.screen, button.callback_data, answer_fails)
+        await bot.on_button(self._update(query=query), self.context)
+        return query
+
+    async def raise_error(self, error=None):
+        """전역 오류 처리기(bot.on_error)를 실제 코드 그대로 불러 본다."""
+        context = SimpleNamespace(
+            user_data=self.screen.user_data,
+            bot=self.context.bot,
+            error=error or RuntimeError("테스트용 예상치 못한 오류"),
+        )
+        await bot.on_error(self._update(), context)
 
     async def say(self, text):
         await bot.on_text(self._update(message=FakeMessage(self.screen, text)), self.context)
@@ -1717,6 +1739,105 @@ async def test_raw_notice():
 
     # 기존 동작은 그대로다 — 원문·entities·특수문자 요약을 여전히 보여 준다
     check(flow.screen.msg_id >= 4, "진단 결과 화면 수가 줄었습니다.")
+
+
+# ============================================================
+# 23. 오류가 나도 끊기지 않기 (보조 동작 · 단계별 안내 · 이어서 진행)
+# ============================================================
+@case("query.answer() 실패 — 보조 동작이 버튼 처리를 막지 않는다")
+async def test_answer_failure_does_not_block():
+    flow = Flow()
+    await walk_to_tag_step(flow)
+    await flow.press("#공통매입세액")
+
+    # 실제 사고와 같은 자리에서 로딩 표시 지우기만 끊긴다.
+    query = await flow.press("✔️ 선택 완료", answer_fails=True)
+
+    check(query.answered, "query.answer()를 부르지도 않았습니다.")
+    check("지식유형" in flow.text,
+          f"answer()가 실패하자 버튼 처리가 멈췄습니다: {flow.text!r}")
+    check(bot.STEPS[flow.session["step"]] == "knowledge",
+          f"단계가 넘어가지 않았습니다: {bot.STEPS[flow.session['step']]}")
+
+    # 사용자에게는 알리지 않는다. 화면에 보조 동작 실패 문구가 섞이면 안 된다.
+    check("로딩" not in flow.text, f"보조 동작 실패를 사용자 화면에 알렸습니다: {flow.text!r}")
+
+
+@case("작성 중 오류 — 노션 언급 없이 안내하고, 지금 단계 화면을 다시 띄운다")
+async def test_error_while_drafting():
+    flow = Flow()
+    await walk_to_tag_step(flow)
+    await flow.press("#공통매입세액")
+    await flow.press("✔️ 선택 완료")
+    check("지식유형" in flow.text, f"지식유형 화면이 아닙니다: {flow.text!r}")
+
+    before = dict(flow.session)
+    await flow.raise_error()
+
+    notice = flow.screen.messages[-2]
+    check("⚠️" in notice, f"오류 안내가 아닙니다: {notice!r}")
+    check("노션" not in notice,
+          f"저장 시도 전인데 노션을 확인하라고 안내했습니다: {notice!r}")
+
+    # 안내 바로 뒤에 지금 단계 화면이 다시 떠 있어야 한다.
+    check("지식유형" in flow.text, f"지금 단계 화면을 다시 띄우지 않았습니다: {flow.text!r}")
+    check(flow.session["step"] == before["step"], "오류 처리가 단계를 바꿨습니다.")
+    check(flow.session["data"] == before["data"], "오류 처리가 입력값을 바꿨습니다.")
+
+    # 안내와 실제 동작이 맞는지 — 그 화면에서 그대로 이어서 진행된다.
+    await flow.press("법령")
+    check("오답유형" in flow.text, f"오류 뒤 이어서 진행하지 못했습니다: {flow.text!r}")
+    check(len(SENT) == 0, "작성 중인데 노션에 저장됐습니다.")
+
+
+@case("저장 뒤 오류 — 노션 확인 안내가 남고, 재표시로 중복 저장되지 않는다")
+async def test_error_after_save():
+    flow = Flow()
+    await walk_to_tag_step(flow)
+    await flow.press("#공통매입세액")
+    await flow.press("✔️ 선택 완료")
+    await flow.press("법령")
+    await flow.press("✔️ 선택 완료")
+    await flow.press("연습서")
+    await flow.say("연p.212#15")
+    await flow.say("기준서 1116호 문단 22")
+    await flow.say("공통매입세액은 과세·면세 공급가액 비율로 안분한다.")
+    check("✅ 저장 완료" in flow.text, f"저장 완료 화면이 아닙니다: {flow.text!r}")
+    check(len(SENT) == 1, f"저장이 1건이어야 합니다: {len(SENT)}건")
+
+    await flow.raise_error()
+
+    notice = flow.screen.messages[-1]
+    check("노션" in notice, f"저장 단계 오류인데 노션 확인 안내가 없습니다: {notice!r}")
+    check(len(SENT) == 1, f"오류 처리가 노션에 다시 저장했습니다: {len(SENT)}건")
+
+
+@case("재표시까지 실패하면 /new 로 다시 시작하라고 안내한다")
+async def test_reshow_failure():
+    flow = Flow()
+    await walk_to_tag_step(flow)
+    await flow.press("#공통매입세액")
+    await flow.press("✔️ 선택 완료")
+
+    # 버튼이 달린 화면(= 단계 화면)만 보내지 못하게 한다.
+    # 버튼 없는 오류 안내는 그대로 나가야 하므로 이 조건으로 갈라낸다.
+    original = flow.context.bot.send_message
+
+    async def only_notices(chat_id, text, reply_markup=None, **kwargs):
+        if reply_markup is not None:
+            raise NetworkError("httpx.ConnectError (테스트용)")
+        return await original(chat_id, text, reply_markup=reply_markup, **kwargs)
+
+    flow.context.bot.send_message = only_notices
+    try:
+        await flow.raise_error()
+    finally:
+        flow.context.bot.send_message = original
+
+    last = flow.screen.messages[-1]
+    check("/new" in last, f"재표시 실패인데 /new 안내가 없습니다: {last!r}")
+    check("다시 띄우지 못했" in last, f"재표시가 실패했다는 사실을 밝히지 않았습니다: {last!r}")
+    check(len(SENT) == 0, "작성 중인데 노션에 저장됐습니다.")
 
 
 # ============================================================

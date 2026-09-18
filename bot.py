@@ -2458,7 +2458,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         return
     query = update.callback_query
-    await query.answer()
+    # 텔레그램 앱의 로딩 표시를 지우는 보조 동작이다. 실패해도 아래 본 처리를
+    # 막지 않는다. 예전에는 이 줄이 맨 앞에 그냥 있어서, 순간적인 네트워크
+    # 끊김(NetworkError)이 나면 버튼 처리가 시작도 못 하고 통째로 중단됐다.
+    # 사용자에게는 알리지 않는다. 로딩 표시가 잠깐 더 도는 정도의 일이다.
+    try:
+        await query.answer()
+    except Exception as e:
+        print(f"[안내] 버튼의 로딩 표시를 지우지 못했습니다(처리는 그대로 이어갑니다): {e}")
 
     # 재시작 알림 버튼은 입력 흐름이 없어도 눌릴 수 있으므로 먼저 처리한다.
     if query.data.startswith("pnd:"):
@@ -2773,11 +2780,60 @@ UNEXPECTED_TEXT = (
     "(오류 원문은 봇을 켜 둔 터미널 창에 적혀 있습니다.)"
 )
 
+# 아직 저장을 시도하지도 않은 단계(작성 중)에서 난 오류의 안내.
+# 노션에 들어간 것이 없으므로 노션을 확인하라고 말하지 않는다. 예전에는 이런
+# 경우에도 위 문구가 떠서, 저장과 무관한 단계인데 노션을 뒤지게 만들었다.
+UNEXPECTED_DRAFT_TEXT = (
+    "⚠️ 예상치 못한 오류가 발생했습니다.\n"
+    "아직 저장하기 전 단계라 저장된 내용은 없습니다.\n"
+    "지금까지 입력하신 내용은 그대로 남아 있습니다.\n\n"
+    "바로 아래에 지금 단계 화면을 다시 띄웁니다. 이어서 진행해 주세요.\n\n"
+    "(오류 원문은 봇을 켜 둔 터미널 창에 적혀 있습니다.)"
+)
+
+# 화면을 다시 띄우는 것까지 실패했을 때만 쓴다. 이때는 이어갈 방법이 없다.
+RESHOW_FAILED_TEXT = (
+    "⚠️ 지금 단계 화면을 다시 띄우지 못했습니다.\n"
+    "이어서 진행할 수 없으니 /new 로 다시 시작해 주세요."
+)
+
+
+def save_attempted(session):
+    """이 세션이 노션 저장을 시도한 적이 있는가. (새 상태를 만들지 않고 기존 값만 본다)
+
+    - step이 마지막 단계를 넘어섰다 = advance()가 끝나 do_save로 들어간 상태다.
+    - saved / pending_id는 do_save가 실제로 save_record를 부른 뒤에만 채워진다.
+      (필수값이 비어 되돌아간 경우에는 save_record를 부르기 전에 빠져나오므로
+       둘 다 그대로다 = 저장 시도 아님)
+    """
+    return (
+        session["step"] >= len(STEPS)
+        or session["saved"]
+        or session["pending_id"] is not None
+    )
+
+
+async def reshow(session, context, chat_id):
+    """오류 뒤 지금 단계 화면을 그대로 다시 그린다. 세션 값은 건드리지 않는다.
+
+    저장을 시도한 세션은 부르는 쪽에서 미리 걸러내므로, 여기서 do_save가 다시
+    돌아 노션에 중복 저장될 일은 없다. 이 함수는 화면만 다룬다.
+    """
+    if session["damage"] is not None:
+        # 손상 확인 화면(명세서 §15-2)에 서 있던 경우다. 보통의 단계 화면을 띄우면
+        # [🔁 그래도 저장]을 고를 방법이 사라진다.
+        await send(session, context, chat_id, build_damage_text(session["damage"]), DAMAGE_KEYBOARD)
+        return
+    await show(session, context, chat_id)
+
 
 async def on_error(update, context):
     """어디서든 새어 나온 예외를 받는다. 사용자 화면에 영어 원문을 보이지 않는다.
 
     세션(context.user_data)은 손대지 않으므로 지금까지 입력한 값은 그대로 남는다.
+    작성 중이었다면 안내만 하지 않고 지금 단계 화면까지 다시 띄운다. 예전에는
+    "내용이 남아 있다"고만 안내해 놓고 화면을 갱신하지 않아, 결국 /new 로
+    처음부터 다시 쓸 수밖에 없었다.
     """
     print("[안내] 예상치 못한 오류가 발생했습니다. 아래는 개발용 오류 원문입니다.")
     traceback.print_exception(
@@ -2788,11 +2844,31 @@ async def on_error(update, context):
     chat = getattr(update, "effective_chat", None)
     if chat is None:
         return
+
+    # /export·/setup에는 session이 없다. 저장 시도 여부를 알 수 없으므로
+    # 그때는 예전의 포괄적인 문구를 그대로 쓴다.
+    user_data = getattr(context, "user_data", None) or {}
+    session = user_data.get("session")
+    drafting = session is not None and not save_attempted(session)
+
     try:
-        await context.bot.send_message(chat.id, UNEXPECTED_TEXT)
+        await context.bot.send_message(chat.id, UNEXPECTED_DRAFT_TEXT if drafting else UNEXPECTED_TEXT)
     except Exception as e:
         # 안내조차 못 보냈다면 여기서 멈춘다. 오류 처리기가 또 오류를 내면 안 된다.
         print(f"[안내] 오류 안내를 텔레그램으로 보내지 못했습니다: {e}")
+        return
+
+    if not drafting:
+        return
+
+    try:
+        await reshow(session, context, chat.id)
+    except Exception as e:
+        print(f"[안내] 오류 뒤 지금 단계 화면을 다시 띄우지 못했습니다: {e}")
+        try:
+            await context.bot.send_message(chat.id, RESHOW_FAILED_TEXT)
+        except Exception as e2:
+            print(f"[안내] 다시 시작하라는 안내도 보내지 못했습니다: {e2}")
 
 
 # ============================================================
