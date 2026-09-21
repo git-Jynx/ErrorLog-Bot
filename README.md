@@ -403,19 +403,19 @@ cd $HOME\Desktop
 통째로 복사해 오는 것)을 쓰는 방법이 가장 간단합니다.
 
 ```bash
-git clone https://github.com/git-wj/cpa-wrongnote-bot.git
+git clone https://github.com/git-wj/ErrorLog-Bot.git
 ```
 
 <details>
 <summary>Git을 설치하지 않았다면 — ZIP으로 받는 방법</summary>
 
-1. 웹브라우저에서 https://github.com/git-wj/cpa-wrongnote-bot 를 엽니다.
+1. 웹브라우저에서 https://github.com/git-wj/ErrorLog-Bot 를 엽니다.
 2. 초록색 `Code` 버튼을 누릅니다.
 3. *`Download ZIP`*을 누릅니다.
 4. 내려받은 ZIP 파일을 더블클릭해 압축을 풉니다.
 5. 압축을 푼 폴더를 **바탕화면**처럼 잘 아는 곳으로 옮깁니다.
 
-압축을 푼 폴더 이름이 `cpa-wrongnote-bot-main`처럼 `-main`이 붙어 있을 수
+압축을 푼 폴더 이름이 `ErrorLog-Bot-main`처럼 `-main`이 붙어 있을 수
 있습니다. 폴더 이름을 바꾸거나 위치를 바꾸셨다면, 이후 `cd` 명령은
 §1-3의 "드래그" 방법을 쓰시면 폴더 이름과 무관하게 이동할 수 있습니다.
 </details>
@@ -427,7 +427,7 @@ git clone https://github.com/git-wj/cpa-wrongnote-bot.git
 **예시 (폴더 이름을 그대로 받으셨다면):**
 
 ```bash
-cd cpa-wrongnote-bot
+cd ErrorLog-Bot
 ```
 
 지금 있는 폴더에 어떤 파일이 있는지 확인해 봅니다.
@@ -620,19 +620,19 @@ cd $HOME\Desktop
 통째로 복사해 오는 것)을 쓰는 방법이 가장 간단합니다.
 
 ```bash
-git clone https://github.com/git-wj/cpa-wrongnote-bot.git
+git clone https://github.com/git-wj/ErrorLog-Bot.git
 ```
 
 <details>
 <summary>Git을 설치하지 않았다면 — ZIP으로 받는 방법</summary>
 
-1. 웹브라우저에서 https://github.com/git-wj/cpa-wrongnote-bot 를 엽니다.
+1. 웹브라우저에서 https://github.com/git-wj/ErrorLog-Bot 를 엽니다.
 2. 초록색 `Code` 버튼을 누릅니다.
 3. *`Download ZIP`*을 누릅니다.
 4. 내려받은 ZIP 파일을 더블클릭해 압축을 풉니다.
 5. 압축을 푼 폴더를 **바탕화면**처럼 잘 아는 곳으로 옮깁니다.
 
-압축을 푼 폴더 이름이 `cpa-wrongnote-bot-main`처럼 `-main`이 붙어 있을 수
+압축을 푼 폴더 이름이 `ErrorLog-Bot-main`처럼 `-main`이 붙어 있을 수
 있습니다. 폴더 이름을 바꾸거나 위치를 바꾸셨다면, 이후 `cd` 명령은
 §1-3의 "드래그" 방법을 쓰시면 폴더 이름과 무관하게 이동할 수 있습니다.
 </details>
@@ -640,7 +640,7 @@ git clone https://github.com/git-wj/cpa-wrongnote-bot.git
 #### ② 폴더를 VS Code로 열기
 
 VS Code 상단 메뉴에서 **`File` > `Open Folder`**를 누르고, 방금 받은
-`cpa-wrongnote-bot` 폴더를 골라 엽니다.
+`ErrorLog-Bot` 폴더를 골라 엽니다.
 
 성공 신호: VS Code 왼쪽에 `bot.py` `chapters.yaml` `requirements.txt` 같은 파일
 목록이 나타납니다. 폴더를 열면 터미널이 닫힐 수 있으니, `Terminal` >
@@ -1046,13 +1046,13 @@ $$
 **맥/리눅스 예시 (폴더를 바탕화면에 그대로 두셨다면):**
 
 ```bash
-cd ~/Desktop/cpa-wrongnote-bot
+cd ~/Desktop/ErrorLog-Bot
 ```
 
 **윈도우 (PowerShell) 예시 (폴더를 바탕화면에 그대로 두셨다면):**
 
 ```powershell
-cd $HOME\Desktop\cpa-wrongnote-bot
+cd $HOME\Desktop\ErrorLog-Bot
 ```
 
 > 폴더 이름을 바꾸셨거나 다른 위치에 두셨다면 §1-3의 "드래그" 방법을 쓰세요.
@@ -1060,7 +1060,7 @@ cd $HOME\Desktop\cpa-wrongnote-bot
 ### 경로 B: VS Code
 
 **① 프로젝트 폴더 열기** — VS Code를 실행하고 `File` > `Open Recent`에서
-`cpa-wrongnote-bot`을 고릅니다. 그다음 `Terminal` > `New Terminal`로 터미널을
+`ErrorLog-Bot`을 고릅니다. 그다음 `Terminal` > `New Terminal`로 터미널을
 엽니다. (이 터미널은 프로젝트 폴더에서 시작되므로 `cd`가 필요하지 않습니다.)
 
 ### 이후는 공통
@@ -1101,7 +1101,7 @@ python bot.py
 | **윈도우** — `.venv\Scripts\Activate.ps1 : 이 시스템에서 스크립트를 실행할 수 없으므로 ... Activate.ps1 파일을 로드할 수 없습니다.` `+ CategoryInfo : 보안 오류` | 윈도우 PowerShell이 기본적으로 스크립트 실행을 막아 둔 상태입니다 | 그 터미널에 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`를 입력하고 엔터를 누릅니다. 확인을 물으면 **`Y`를 입력하고 엔터**를 누른 뒤, 가상환경 활성화 명령을 다시 실행합니다. `-Scope Process`라서 **그 창에서만** 적용되며 컴퓨터 설정을 바꾸지 않습니다 |
 | **윈도우** — 터미널에 이모지가 `?`나 네모로 보임 | 윈도우 기본 콘솔의 글자 처리 방식 차이입니다 | **정상이며 동작에 아무 문제가 없습니다.** 한글은 정상으로 보입니다. 텔레그램 화면의 이모지도 정상입니다 |
 | **윈도우** — `Ctrl + C`를 눌러도 봇이 바로 꺼지지 않음 | 윈도우와 맥의 종료 처리 차이입니다. 맥에서는 생기지 않습니다 | **정상입니다.** 몇 초 기다리거나 `Ctrl + C`를 한 번 더 누르세요 |
-| **윈도우** — `cd`로 폴더를 이동할 수 없음 / 경로가 자꾸 틀림 | 폴더 경로에 한글이나 공백이 들어 있으면 큰따옴표로 감싸야 하고, 드래그로 넣어도 실패하기 쉽습니다 | 프로젝트 폴더를 `C:\cpa-wrongnote-bot`처럼 **짧은 영문 경로**로 옮기세요. 그래도 어렵다면 §1-3의 "드래그" 방법을 쓰세요 |
+| **윈도우** — `cd`로 폴더를 이동할 수 없음 / 경로가 자꾸 틀림 | 폴더 경로에 한글이나 공백이 들어 있으면 큰따옴표로 감싸야 하고, 드래그로 넣어도 실패하기 쉽습니다 | 프로젝트 폴더를 `C:\ErrorLog-Bot`처럼 **짧은 영문 경로**로 옮기세요. 그래도 어렵다면 §1-3의 "드래그" 방법을 쓰세요 |
 | `python : 용어를 인식할 수 없습니다` / `python: command not found` | 파이썬이 설치되지 않았거나, 윈도우 설치 시 `Add python.exe to PATH`를 켜지 않았습니다 | 맥은 `python` 대신 `python3`을 써 보세요. 윈도우는 파이썬을 지우고 **`Add python.exe to PATH`를 체크한 뒤** 다시 설치하세요 (§1-4) |
 | 봇이 켜지지 않고 `[오류] 텔레그램 봇 토큰이 없습니다.` | `.env` 파일이 없거나, 파일 이름이 `.env.txt`로 저장되었거나, 값이 비어 있습니다 | §4의 ③번을 다시 하세요. 특히 윈도우 메모장의 `.env.txt` 함정을 확인하세요 |
 | 봇이 켜지지 않고 `[오류] chapters.yaml의 형식이 잘못되었습니다.` | `chapters.yaml`의 들여쓰기가 깨졌습니다 | 들여쓰기는 **공백 2칸 단위**여야 하고 **탭 문자는 쓸 수 없습니다**. 단원 이름에 콜론(`:`)을 넣으려면 따옴표로 감싸세요 |
@@ -1174,7 +1174,7 @@ type pending_records.json
 ---
 
 **그래도 풀리지 않으면** 터미널에 나온 **오류 원문을 그대로 복사해서**
-[GitHub Issues](https://github.com/git-wj/cpa-wrongnote-bot/issues)에 올려 주세요.
+[GitHub Issues](https://github.com/git-wj/ErrorLog-Bot/issues)에 올려 주세요.
 Claude Code(§8-3)를 쓰고 있다면 오류 원문을 붙여넣고 물어보는 것도 좋은
 방법입니다.
 
@@ -1283,7 +1283,7 @@ claude
 ### 폴더 구조
 
 ```
-cpa-wrongnote-bot/
+ErrorLog-Bot/
 ├── bot.py                    봇 본체. 텔레그램 화면과 흐름이 전부 여기 있습니다
 ├── notion_common.py          노션에 요청을 보내고 오류를 한국어로 바꾸는 부분
 ├── content_format.py         정리 내용 ↔ 노션 블록 변환 규칙
@@ -1337,6 +1337,6 @@ python check_notion.py
 ### 문의
 
 버그나 막히는 지점은
-[GitHub Issues](https://github.com/git-wj/cpa-wrongnote-bot/issues)에 올려 주세요.
+[GitHub Issues](https://github.com/git-wj/ErrorLog-Bot/issues)에 올려 주세요.
 터미널에 나온 **오류 원문을 그대로 복사해서** 함께 적어 주시면 원인을 빨리 찾을 수
 있습니다.
