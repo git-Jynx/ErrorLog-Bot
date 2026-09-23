@@ -1841,6 +1841,256 @@ async def test_reshow_failure():
 
 
 # ============================================================
+# 25. 손상 확인 중 새 글 도착 — 앞 글을 지키고 묻는다
+# ============================================================
+# 텔레그램 데스크톱은 4,096자를 넘는 붙여넣기를 여러 메시지로 쪼개 보낸다.
+# 수식 한가운데에서 끊기면 앞 조각의 `$$`가 홀수가 되어 손상 확인 화면이 뜨고,
+# 곧바로 뒷 조각이 도착한다. 예전에는 그 뒷 조각이 앞 글을 통째로 덮어썼다.
+
+# 그 자체로는 정상 서식인 뒷 조각. 예전에는 이것이 도착하는 순간 곧바로
+# 저장이 진행되어 노션에 뒷부분만 들어갔다 (경우 B-2 · 최악).
+BROKEN_FIRST = "$$\nWACC = w_e r_e + w_d r_d"
+CLEAN_SECOND = "비율은 시가 기준이다."
+
+
+def split_in_equation():
+    """WACC 규격 원문을 수식 블록 한가운데에서 둘로 자른다.
+
+    텔레그램이 줄 경계에서 끊고 각 조각의 앞뒤 공백을 떼어 보내는 것과 같은
+    모양이다. 두 조각을 줄바꿈 하나로 이으면 원문과 정확히 같아야 한다.
+    """
+    marker = "WACC = \\frac{E}{V} r_e + \\frac{D}{V} r_d (1 - t)\n"
+    head, tail = WACC_SOURCE.split(marker)
+    first = head + marker.rstrip("\n")   # 여는 `$$`만 있고 닫는 `$$`가 없다
+    second = tail                        # 닫는 `$$`부터 끝까지
+    check(first + "\n" + second == WACC_SOURCE, "자른 두 조각이 원문을 이루지 않습니다.")
+    check(first == first.strip() and second == second.strip(),
+          "조각의 앞뒤에 공백이 남아 있어 텔레그램 전송 모양과 다릅니다.")
+    return first, second
+
+
+async def at_choice_screen(flow, first=BROKEN_FIRST, second=CLEAN_SECOND):
+    """손상 확인 화면에 선 뒤 새 글을 하나 더 보내 선택 화면까지 간다."""
+    await content_step(flow)
+    await flow.say(first)
+    check("서식이 깨진 것 같습니다" in flow.text, f"손상 확인 화면이 아닙니다: {flow.text!r}")
+    await flow.say(second)
+    check("새 글을 받았습니다" in flow.text, f"선택 화면이 아닙니다: {flow.text!r}")
+
+
+@case("손상 확인 중 글 도착 — 선택 화면이 뜨고 앞 글이 보존되며 저장은 0건")
+async def test_incoming_asks():
+    flow = Flow()
+    await at_choice_screen(flow)
+
+    for label in ("➕ 이어붙이기", "🔄 새 글로 바꾸기", "↩️ 새 글 버리기"):
+        check(flow.has(label), f"선택 화면에 [{label}]이 없습니다. 지금 버튼: {flow.labels()}")
+
+    check(flow.session["data"]["정리 내용"] == BROKEN_FIRST,
+          "앞 글이 덮어써졌습니다. 이것이 유실의 본체다.")
+    check(flow.session["incoming"] == CLEAN_SECOND, "새 글이 따로 보관되지 않았습니다.")
+    check(not SENT, "고르기도 전에 노션으로 보냈습니다.")
+
+    # 글자 수를 보여 줘야 어느 쪽이 어느 글인지 사용자가 가늠할 수 있다
+    check(f"{len(BROKEN_FIRST)}자" in flow.text, f"앞 글의 글자 수가 없습니다: {flow.text!r}")
+    check(f"{len(CLEAN_SECOND)}자" in flow.text, f"새 글의 글자 수가 없습니다: {flow.text!r}")
+
+    # 선택 화면 위에 남은 옛 손상 화면의 버튼을 눌러도 저장되지 않아야 한다
+    query = FakeQuery(flow.screen, "force")
+    await bot.on_button(flow._update(query=query), flow.context)
+    check(not SENT, "옛 [🔁 그래도 저장] 버튼으로 저장이 진행됐습니다.")
+    check("새 글을 받았습니다" in flow.text, f"선택 화면으로 되돌아오지 않았습니다: {flow.text!r}")
+
+
+@case("분할 재현 — 수식 중간에서 잘린 두 조각을 [➕ 이어붙이기]로 원문 그대로 복원")
+async def test_incoming_append():
+    first, second = split_in_equation()
+
+    flow = Flow()
+    await at_choice_screen(flow, first, second)
+    check(not SENT, "고르기도 전에 노션으로 보냈습니다.")
+
+    await flow.press("➕ 이어붙이기")
+    check("✅ 저장 완료" in flow.text, f"이어붙인 뒤 저장되지 않았습니다: {flow.text!r}")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    check(SENT[-1]["정리 내용"] == WACC_SOURCE,
+          "이어붙인 결과가 원문과 다릅니다.\n"
+          f"      저장된 것: {SENT[-1]['정리 내용']!r}")
+
+    # 잘렸던 수식이 코드블록 대체가 아닌 진짜 수식 블록으로 복원됐는지 본다
+    kinds = types_of(body_of(SENT[-1]))
+    check("equation" in kinds, f"수식 블록이 복원되지 않았습니다. 블록 종류: {kinds}")
+    check(content_format.detect_corruption(SENT[-1]["정리 내용"]) is None,
+          "이어붙인 글이 여전히 손상으로 판정됩니다.")
+
+
+@case("[🔄 새 글로 바꾸기] — 새 글 기준으로 손상 감지를 다시 돌린다")
+async def test_incoming_replace():
+    # 새 글도 손상이면 손상 확인 화면이 새 판정으로 다시 뜬다
+    flow = Flow()
+    await at_choice_screen(flow, BROKEN_FIRST, ":::code text\nprint(1)")
+    await flow.press("🔄 새 글로 바꾸기")
+    check("서식이 깨진 것 같습니다" in flow.text, f"손상 확인 화면이 아닙니다: {flow.text!r}")
+    check("코드블록" in flow.text, f"새 글 기준으로 다시 판정하지 않았습니다: {flow.text!r}")
+    check(flow.session["data"]["정리 내용"] == ":::code text\nprint(1)", "새 글로 교체되지 않았습니다.")
+    check(not SENT, "손상 판정이 났는데 노션으로 보냈습니다.")
+
+    # 새 글이 정상이면 그대로 저장으로 이어진다
+    flow2 = Flow()
+    await at_choice_screen(flow2, BROKEN_FIRST, WACC_SOURCE)
+    await flow2.press("🔄 새 글로 바꾸기")
+    check("✅ 저장 완료" in flow2.text, f"정상 새 글이 저장되지 않았습니다: {flow2.text!r}")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    check(SENT[-1]["정리 내용"] == WACC_SOURCE, "새 글이 아닌 것이 저장됐습니다.")
+
+
+@case("[↩️ 새 글 버리기] — 앞 글은 그대로, 손상 확인 화면으로 돌아간다")
+async def test_incoming_drop():
+    flow = Flow()
+    await at_choice_screen(flow)
+
+    await flow.press("↩️ 새 글 버리기")
+    check("서식이 깨진 것 같습니다" in flow.text, f"손상 확인 화면으로 돌아오지 않았습니다: {flow.text!r}")
+    check(flow.has("🔁 그래도 저장"), f"강행 저장 버튼이 사라졌습니다. 지금 버튼: {flow.labels()}")
+    check(flow.session["data"]["정리 내용"] == BROKEN_FIRST, "앞 글이 바뀌었습니다.")
+    check(flow.session["incoming"] is None, "버린 새 글이 세션에 남아 있습니다.")
+    check(not SENT, "버리기를 눌렀는데 노션으로 보냈습니다.")
+
+    # 되돌아온 화면에서 강행 저장이 그대로 된다 (기존 동작이 깨지지 않았다)
+    await flow.press("🔁 그래도 저장")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    check(SENT[-1]["정리 내용"] == BROKEN_FIRST, "앞 글이 아닌 것이 저장됐습니다.")
+
+
+@case("세 조각 연속 도착 — 보관 중인 새 글에 차례로 쌓인다")
+async def test_incoming_three_pieces():
+    # 셋을 이어야 비로소 `$$`의 짝이 맞는다. 조각 하나하나는 깨져 보인다.
+    pieces = ["$$\nE = mc^2", "$$\n\n여기서 m은 질량이다.", "c는 빛의 속도다."]
+
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(pieces[0])
+    check("서식이 깨진 것 같습니다" in flow.text, f"손상 확인 화면이 아닙니다: {flow.text!r}")
+
+    await flow.say(pieces[1])
+    check(flow.session["incoming"] == pieces[1], "둘째 조각이 보관되지 않았습니다.")
+
+    await flow.say(pieces[2])
+    expected = pieces[1] + "\n" + pieces[2]
+    check(flow.session["incoming"] == expected,
+          f"셋째 조각이 쌓이지 않았습니다: {flow.session['incoming']!r}")
+    check(flow.session["data"]["정리 내용"] == pieces[0], "앞 글이 덮어써졌습니다.")
+    check(f"{len(expected)}자" in flow.text, f"화면의 글자 수가 갱신되지 않았습니다: {flow.text!r}")
+    check(not SENT, "고르기도 전에 노션으로 보냈습니다.")
+
+    await flow.press("➕ 이어붙이기")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    check(SENT[-1]["정리 내용"] == "\n".join(pieces), "세 조각이 순서대로 이어지지 않았습니다.")
+
+    # 이어붙인 결과가 그래도 깨져 있으면, 저장하지 않고 손상 확인 화면을 다시 띄운다
+    flow2 = Flow()
+    await at_choice_screen(flow2, "$$\nE = mc^2", "여기서 m은 질량이다.")
+    await flow2.press("➕ 이어붙이기")
+    check("서식이 깨진 것 같습니다" in flow2.text, f"손상 확인 화면이 아닙니다: {flow2.text!r}")
+    check(len(SENT) == 1, "이어붙인 결과가 깨졌는데 노션으로 보냈습니다.")
+    check(flow2.session["data"]["정리 내용"] == "$$\nE = mc^2\n여기서 m은 질량이다.",
+          "이어붙인 결과가 세션에 남지 않았습니다.")
+
+
+@case("저장 완료 후 글 도착 — 저장되지 않았다고 알리고 저장 건수는 그대로")
+async def test_text_after_saved():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(WACC_SOURCE)
+    check("✅ 저장 완료" in flow.text, f"저장되지 않았습니다: {flow.text!r}")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+
+    await flow.say("뒤늦게 도착한 뒷부분입니다.")
+    reply = flow.screen.replies[-1]
+    check("저장되지 않았습니다" in reply, f"버려졌다는 사실을 알리지 않았습니다: {reply!r}")
+    check("같은 문제로 하나 더" in reply, f"다음에 할 일을 알려 주지 않았습니다: {reply!r}")
+    check(len(SENT) == 1, f"저장 뒤 보낸 글이 노션에 들어갔습니다: {len(SENT)}건")
+    check("✅ 저장 완료" in flow.text, "저장 완료 화면이 사라졌습니다.")
+
+    # 저장에 실패해 [🔄 다시 시도]가 떠 있는 경우는 사정이 달라 기존 문구를 쓴다
+    flow.session["saved"] = False
+    await flow.say("또 보낸 글")
+    check("위 화면의 버튼을 눌러" in flow.screen.replies[-1],
+          f"저장 실패 화면에서 문구가 바뀌었습니다: {flow.screen.replies[-1]!r}")
+
+
+@case("손상 판정·보관 글이 교체·저장·새 흐름에서 남지 않는다")
+async def test_damage_cleared_everywhere():
+    def clean(flow, where):
+        check(flow.session["damage"] is None, f"{where}: 손상 판정이 남았습니다.")
+        check(flow.session["incoming"] is None, f"{where}: 보관 중인 새 글이 남았습니다.")
+
+    # (1) 선택 화면 → [🔄 새 글로 바꾸기]로 교체 후 저장
+    flow = Flow()
+    await at_choice_screen(flow, BROKEN_FIRST, WACC_SOURCE)
+    await flow.press("🔄 새 글로 바꾸기")
+    clean(flow, "새 글로 바꾸어 저장한 뒤")
+
+    # (2) [📌 같은 문제로 하나 더]로 새 흐름 시작
+    await flow.press("📌 같은 문제로 하나 더")
+    clean(flow, "[📌 같은 문제로 하나 더] 뒤")
+
+    # (3) 손상 확인 화면에서 [❌ 취소] 후 글 입력으로 저장 (글 입력 경로)
+    flow2 = Flow()
+    await content_step(flow2)
+    await flow2.say(BROKEN_FIRST)
+    await flow2.press("❌ 취소")
+    clean(flow2, "[❌ 취소] 뒤")
+    await flow2.say(WACC_SOURCE)
+    check("✅ 저장 완료" in flow2.text, f"다시 보낸 뒤 저장되지 않았습니다: {flow2.text!r}")
+    clean(flow2, "글 입력으로 저장한 뒤")
+
+    # (4) 선택 화면에서 [➕ 이어붙이기]로 저장
+    first, second = split_in_equation()
+    flow3 = Flow()
+    await at_choice_screen(flow3, first, second)
+    await flow3.press("➕ 이어붙이기")
+    clean(flow3, "이어붙여 저장한 뒤")
+
+    # (5) /new 로 새로 시작
+    flow4 = Flow()
+    await at_choice_screen(flow4)
+    await flow4.command(bot.cmd_new)
+    clean(flow4, "/new 뒤")
+
+    # (6) [❌ 처음부터]는 세션을 통째로 버린다
+    flow5 = Flow()
+    await at_choice_screen(flow5)
+    await flow5.press("↩️ 새 글 버리기")
+    await flow5.press("❌ 취소")
+    await flow5.press("❌ 처음부터")
+    check(flow5.session is None, "[❌ 처음부터] 뒤에도 세션이 남아 있습니다.")
+
+
+@case("선택 화면에서 오류 — 재표시가 선택 화면을 그대로 다시 그린다")
+async def test_reshow_on_choice_screen():
+    first, second = split_in_equation()
+    flow = Flow()
+    await at_choice_screen(flow, first, second)
+
+    await flow.raise_error()
+    check("저장하기 전 단계라" in flow.screen.messages[-2],
+          f"작성 중 오류 안내가 아닙니다: {flow.screen.messages[-2]!r}")
+    check("새 글을 받았습니다" in flow.text,
+          f"오류 뒤에 선택 화면을 다시 그리지 않았습니다: {flow.text!r}")
+    for label in ("➕ 이어붙이기", "🔄 새 글로 바꾸기", "↩️ 새 글 버리기"):
+        check(flow.has(label), f"다시 그린 화면에 [{label}]이 없습니다. 지금 버튼: {flow.labels()}")
+    check(flow.session["data"]["정리 내용"] == first, "오류 뒤 앞 글이 사라졌습니다.")
+    check(flow.session["incoming"] == second, "오류 뒤 보관 중인 새 글이 사라졌습니다.")
+    check(not SENT, "오류 처리 중에 노션으로 보냈습니다.")
+
+    # 다시 그린 화면에서 그대로 이어 고를 수 있다
+    await flow.press("➕ 이어붙이기")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    check(SENT[-1]["정리 내용"] == WACC_SOURCE, "오류 뒤 이어붙인 결과가 원문과 다릅니다.")
+
+
+# ============================================================
 # 실행
 # ============================================================
 async def run_all():

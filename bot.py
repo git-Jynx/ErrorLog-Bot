@@ -584,6 +584,7 @@ def new_session():
         "pending_id": None,  # 저장에 실패해 백업 파일에 남아 있는 항목의 id
         "saved": False,
         "damage": None,      # 손상 정황 안내문. 강행/취소를 고르기 전까지만 담긴다 (명세서 §15-2)
+        "incoming": None,    # 손상 확인 화면에 서 있는 동안 도착한 새 글. 고르기 전까지만 담긴다
     }
 
 
@@ -1123,6 +1124,10 @@ async def do_save(session, context, chat_id, query=None):
         return
 
     session["saved"] = True
+    # 저장이 끝난 기록에 옛 손상 판정이나 보관 중인 새 글이 남으면, 이어지는
+    # [📌 같은 문제로 하나 더] 흐름에서 엉뚱한 화면이 뜬다. 여기서 확실히 지운다.
+    session["damage"] = None
+    session["incoming"] = None
     text = build_saved_text(session)
     if notes:
         # 수식이 코드블록으로 바뀐 안내 (명세서 §13-3). 저장 자체는 성공이다.
@@ -1194,6 +1199,7 @@ def restart_same_problem(session):
     session["locked"] = set(KEEP_STEPS)
     session["resume"] = None
     session["damage"] = None
+    session["incoming"] = None
     # 개념태그·오답유형은 KEEP_FIELDS에 없으므로 위에서 이미 지워졌다.
     # 화면에 남은 태그 목록도 비워 다음 기록에 선택이 따라붙지 않게 한다.
     reset_tag_screen(session)
@@ -1252,6 +1258,61 @@ def build_damage_text(reason):
         "휴대폰에서 보내면 `$$` `##` `- ` 같은 기호가 사라진 채 도착합니다.\n"
         "지금 보낸 내용 그대로 저장하려면 [🔁 그래도 저장]을 눌러 주세요."
     )
+
+
+# ------------------------------------------------------------
+# 손상 확인 화면에 서 있는 동안 새 글이 도착한 경우
+# ------------------------------------------------------------
+# 같은 상황이 정반대의 두 의도에서 생긴다.
+#   - 경고를 보고 컴퓨터에서 다시 보낸 경우  → 앞 글을 "교체"하려는 것
+#   - 텔레그램이 긴 글을 쪼개 보낸 경우      → 앞 글에 "이어붙여야" 하는 것
+# 봇은 둘을 구분할 수 없다. 추측해서 한쪽으로 처리하면 나머지 한쪽에서
+# 앞 글이 조용히 사라진다. 그래서 묻고, 고르기 전에는 저장하지 않는다.
+INCOMING_KEYBOARD = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("➕ 이어붙이기", callback_data="inc:append"),
+        InlineKeyboardButton("🔄 새 글로 바꾸기", callback_data="inc:replace"),
+    ],
+    [InlineKeyboardButton("↩️ 새 글 버리기", callback_data="inc:drop")],
+])
+
+
+def join_pieces(first, second):
+    """쪼개져 온 두 조각을 하나로 잇는다. 사이에 줄바꿈 하나만 넣는다.
+
+    텔레그램 데스크톱은 4,096자를 넘는 글을 줄 경계에서 끊어 보내고, 각
+    조각의 앞뒤 공백·줄바꿈은 전송과 입력 처리(strip)를 거치며 사라진다.
+    끊긴 자리에 있던 줄바꿈 하나를 되돌려 놓으면 원문이 그대로 복원된다.
+    아무것도 넣지 않으면 두 줄이 한 줄로 붙고, 빈 줄을 넣으면 없던 문단이
+    생긴다. 수식 블록 안에서 끊긴 경우에도 이 규칙이 그대로 맞는다.
+    """
+    return f"{first}\n{second}"
+
+
+def build_incoming_text(session):
+    """앞 글을 덮어쓰지 않았음을 보이고, 무엇을 할지 고르게 하는 화면."""
+    first = session["data"].get(FIELDS["content"]) or ""
+    return (
+        "⚠️ 서식을 확인하는 중에 새 글을 받았습니다.\n"
+        f"   앞서 받은 글: 약 {len(first)}자\n"
+        f"   새로 받은 글: 약 {len(session['incoming'])}자\n\n"
+        "앞서 받은 글은 그대로 두었습니다. 저장하지 않았습니다.\n\n"
+        "긴 글이 둘로 나뉘어 온 것이라면 [➕ 이어붙이기],\n"
+        "컴퓨터에서 다시 보낸 것이라면 [🔄 새 글로 바꾸기]를 고르세요.\n"
+        "잘못 보낸 글이라면 [↩️ 새 글 버리기]로 앞 화면으로 돌아갑니다."
+    )
+
+
+# 저장이 끝난 세션에 글이 도착했을 때의 안내 (경우 A).
+# 예전에는 "위 화면의 버튼을 눌러 주세요."뿐이어서, 쪼개져 온 뒷부분이
+# 조용히 버려진 것을 사용자가 알 수 없었다.
+AFTER_SAVED_TEXT = (
+    "⚠️ 방금 받은 글은 저장되지 않았습니다.\n"
+    "앞의 기록은 이미 저장이 끝났습니다.\n\n"
+    "이어지는 내용이라면 위 화면의 [📌 같은 문제로 하나 더]를 눌러\n"
+    "새 기록으로 넣어 주세요.\n"
+    "(방금 보낸 글은 대화창에 그대로 남아 있어 다시 복사할 수 있습니다)"
+)
 
 
 # ============================================================
@@ -2531,6 +2592,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action in ("force", "damagecancel"):
         if session["damage"] is None:
             return
+        if session["incoming"] is not None:
+            # 선택 화면이 떠 있는데 그 위에 남은 옛 손상 화면의 버튼을 누른 경우다.
+            # 여기서 강행 저장하면 보관 중인 새 글이 조용히 사라진다. 고르기
+            # 전에는 저장하지 않는다는 원칙대로 선택 화면을 다시 띄운다.
+            await send(session, context, chat_id, build_incoming_text(session), INCOMING_KEYBOARD, query)
+            return
         session["damage"] = None
         if action == "force":
             if advance(session):
@@ -2543,6 +2610,38 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "   컴퓨터 텔레그램에서 정리 내용을 다시 보내 주세요."
         )
         await show(session, context, chat_id, query)
+        return
+
+    # 손상 확인 중 새 글이 도착해 뜬 선택 화면의 세 버튼.
+    # 어느 쪽을 골라도 앞 글과 새 글 중 무엇이 남는지가 분명하다.
+    if action.startswith("inc:"):
+        if session["damage"] is None or session["incoming"] is None:
+            return
+        choice = action[4:]
+        incoming = session["incoming"]
+        session["incoming"] = None
+
+        if choice == "drop":
+            # 새 글만 버리고 원래 손상 확인 화면으로 돌아간다. 앞 글은 그대로다.
+            await send(session, context, chat_id, build_damage_text(session["damage"]), DAMAGE_KEYBOARD, query)
+            return
+
+        first = session["data"].get(FIELDS["content"]) or ""
+        value = join_pieces(first, incoming) if choice == "append" else incoming
+
+        # 정리 내용이 바뀌었으므로 옛 손상 판정은 버리고 새 값으로 다시 판정한다.
+        session["data"][FIELDS["content"]] = value
+        session["damage"] = None
+        reason = content_format.detect_corruption(value)
+        if reason:
+            session["damage"] = reason
+            await send(session, context, chat_id, build_damage_text(reason), DAMAGE_KEYBOARD, query)
+            return
+
+        if advance(session):
+            await do_save(session, context, chat_id, query)
+        else:
+            await show(session, context, chat_id, query)
         return
 
     if session["step"] >= len(STEPS):
@@ -2697,7 +2796,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if session["step"] >= len(STEPS):
-        await update.message.reply_text("지금은 위 화면의 버튼을 눌러 주세요.")
+        # 저장까지 끝난 세션이면 "이 글은 버려졌다"는 사실을 분명히 알린다 (경우 A).
+        # 저장에 실패해 화면에 [🔄 다시 시도]가 떠 있는 경우는 사정이 달라
+        # 기존 문구를 그대로 쓴다.
+        if session["saved"]:
+            await update.message.reply_text(AFTER_SAVED_TEXT)
+        else:
+            await update.message.reply_text("지금은 위 화면의 버튼을 눌러 주세요.")
         return
 
     step = STEPS[session["step"]]
@@ -2712,6 +2817,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
+
+    # 손상 확인 화면(또는 그 뒤의 선택 화면)에 서 있는 동안 도착한 글 (경우 B-1·B-2).
+    # 예전에는 이 확인이 없어 아래에서 앞 글을 통째로 덮어썼다. 새 글이 그 자체로
+    # 정상 서식이면 그대로 저장까지 진행되어, 노션에는 뒷부분만 들어가고 앞부분은
+    # 경고 없이 사라졌다. 이제 덮어쓰지 않고 따로 보관한 뒤 무엇을 할지 묻는다.
+    if session["damage"] is not None:
+        # 세 조각 이상으로 쪼개져 와도 보관 중인 글 뒤에 같은 방식으로 쌓는다.
+        session["incoming"] = (
+            value if session["incoming"] is None else join_pieces(session["incoming"], value)
+        )
+        await send(session, context, chat_id, build_incoming_text(session), INCOMING_KEYBOARD)
+        return
 
     if step == "tag" and session["tag_mode"] == "search":
         # 검색어는 세션에 남겨 둔다. [➕ 새 태그]를 거쳐 돌아와도 유지되어야 한다 (명세서 §12-3).
@@ -2753,6 +2870,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 정리 내용만 검사한다. 서식이 들어가는 칸은 여기 하나뿐이다 (명세서 §15-2).
     # 값은 이미 세션에 넣어 두었으므로 [🔁 그래도 저장]을 누르면 그대로 저장된다.
     if step == "content":
+        # 정리 내용이 새 값으로 교체된 자리다. 옛 손상 판정과 보관 중인 새 글은
+        # 이 값과 더 이상 관계가 없으므로 여기서 지운다. 예전에는 버튼 경로에만
+        # 지우는 곳이 있어, 글을 다시 보내 저장까지 끝내도 옛 판정이 세션에 남았다.
+        session["damage"] = None
+        session["incoming"] = None
         reason = content_format.detect_corruption(value)
         if reason:
             session["damage"] = reason
@@ -2822,6 +2944,11 @@ async def reshow(session, context, chat_id):
     if session["damage"] is not None:
         # 손상 확인 화면(명세서 §15-2)에 서 있던 경우다. 보통의 단계 화면을 띄우면
         # [🔁 그래도 저장]을 고를 방법이 사라진다.
+        if session["incoming"] is not None:
+            # 새 글을 보관한 채 선택 화면에 서 있던 경우다. 손상 확인 화면을 띄우면
+            # 보관 중인 새 글을 고를 방법이 사라진다.
+            await send(session, context, chat_id, build_incoming_text(session), INCOMING_KEYBOARD)
+            return
         await send(session, context, chat_id, build_damage_text(session["damage"]), DAMAGE_KEYBOARD)
         return
     await show(session, context, chat_id)
