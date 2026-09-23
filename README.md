@@ -403,13 +403,13 @@ cd $HOME\Desktop
 통째로 복사해 오는 것)을 쓰는 방법이 가장 간단합니다.
 
 ```bash
-git clone https://github.com/git-wj/ErrorLog-Bot.git
+git clone https://github.com/git-Jynx/ErrorLog-Bot.git
 ```
 
 <details>
 <summary>Git을 설치하지 않았다면 — ZIP으로 받는 방법</summary>
 
-1. 웹브라우저에서 https://github.com/git-wj/ErrorLog-Bot 를 엽니다.
+1. 웹브라우저에서 https://github.com/git-Jynx/ErrorLog-Bot 를 엽니다.
 2. 초록색 `Code` 버튼을 누릅니다.
 3. *`Download ZIP`*을 누릅니다.
 4. 내려받은 ZIP 파일을 더블클릭해 압축을 풉니다.
@@ -620,13 +620,13 @@ cd $HOME\Desktop
 통째로 복사해 오는 것)을 쓰는 방법이 가장 간단합니다.
 
 ```bash
-git clone https://github.com/git-wj/ErrorLog-Bot.git
+git clone https://github.com/git-Jynx/ErrorLog-Bot.git
 ```
 
 <details>
 <summary>Git을 설치하지 않았다면 — ZIP으로 받는 방법</summary>
 
-1. 웹브라우저에서 https://github.com/git-wj/ErrorLog-Bot 를 엽니다.
+1. 웹브라우저에서 https://github.com/git-Jynx/ErrorLog-Bot 를 엽니다.
 2. 초록색 `Code` 버튼을 누릅니다.
 3. *`Download ZIP`*을 누릅니다.
 4. 내려받은 ZIP 파일을 더블클릭해 압축을 풉니다.
@@ -1174,7 +1174,7 @@ type pending_records.json
 ---
 
 **그래도 풀리지 않으면** 터미널에 나온 **오류 원문을 그대로 복사해서**
-[GitHub Issues](https://github.com/git-wj/ErrorLog-Bot/issues)에 올려 주세요.
+[GitHub Issues](https://github.com/git-Jynx/ErrorLog-Bot/issues)에 올려 주세요.
 Claude Code(§8-3)를 쓰고 있다면 오류 원문을 붙여넣고 물어보는 것도 좋은
 방법입니다.
 
@@ -1337,6 +1337,6 @@ python check_notion.py
 ### 문의
 
 버그나 막히는 지점은
-[GitHub Issues](https://github.com/git-wj/ErrorLog-Bot/issues)에 올려 주세요.
+[GitHub Issues](https://github.com/git-Jynx/ErrorLog-Bot/issues)에 올려 주세요.
 터미널에 나온 **오류 원문을 그대로 복사해서** 함께 적어 주시면 원인을 빨리 찾을 수
 있습니다.
