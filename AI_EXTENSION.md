@@ -5,6 +5,11 @@
 >
 > 이 문서는 "이렇게 하라"는 지시가 아니라, **붙이고 싶다면 어디를 건드리게 되는지**
 > 알려 주는 지도입니다. 아래 파일·함수 이름은 현재 코드에서 확인한 것입니다.
+>
+> **위치는 줄 번호가 아니라 함수 이름으로 적습니다.** 줄 번호는 코드가 조금만 바뀌어도
+> 조용히 엉뚱한 줄을 가리키지만, 함수 이름은 틀리면 검색이 실패해 곧바로 드러납니다.
+> 함수 안의 특정 지점은 **함수 이름 + 그 줄의 코드 조각**으로 적었습니다.
+> 편집기의 파일 내 검색(`Ctrl + F` / `Cmd + F`)에 그대로 붙여넣어 찾으십시오.
 
 ---
 
@@ -46,34 +51,59 @@ v1에서 **AI를 의도적으로 제외했습니다.** 빼먹은 것이 아니�
 **무엇:** 급하게 적은 정리 내용의 문장을 고르게 다듬습니다. 내용을 바꾸는 것이
 아니라 어색한 문장만 손보는 용도입니다.
 
-**어디:** [bot.py](./bot.py)의 `on_text()` 안, 정리 내용이 세션에 들어간 직후입니다.
+**끼울 조건:** `content_format.detect_corruption()` 검사를 **통과한 뒤**,
+`advance(session)`을 부르기 **전**입니다. 손상된 원문을 AI에 먹이면 손상된 채로
+다듬어져 §15-2의 안전망이 무의미해집니다.
 
-- `bot.py:2657` — `session["data"][FIELDS[step]] = value`
-- `bot.py:2661` — `if step == "content":` 블록에서 `content_format.detect_corruption()`
-  으로 서식 손상을 검사합니다.
-- `bot.py:2668` — `advance(session)`이 참이면 `do_save()`로 저장에 들어갑니다.
+**⚠️ 그 조건을 만족하는 자리가 한 곳이 아닙니다.** 정리 내용이 들어오는 경로는
+세 갈래이고, **셋 중 어느 하나만 고치면 나머지 경로에는 AI가 걸리지 않습니다.**
 
-**끼울 지점:** `detect_corruption()` 검사를 **통과한 뒤**, `advance(session)`을
-부르기 **전**입니다. 손상된 원문을 AI에 먹이면 손상된 채로 다듬어져 §15-2의
-안전망이 무의미해집니다.
+| # | 경로 | 어디 | 찾을 코드 조각 |
+| --- | --- | --- | --- |
+| 가 | 3,000자 **미만**의 보통 입력 | [bot.py](./bot.py)의 `on_text()` | `if step == "content":` 분기 안, `reason = content_format.detect_corruption(value)`가 `None`인 경우 |
+| 나 | **3,000자 이상**의 긴 글 (이어받기) | [bot.py](./bot.py)의 `on_button()` | `if action == "col:done":` 분기 안, `value = join_collected(session["collect"])` 뒤 |
+| 다 | 손상 확인 중에 새 글이 와서 고른 경우 | [bot.py](./bot.py)의 `on_button()` | `if action.startswith("inc:"):` 분기 안, `value = join_pieces(first, incoming) if choice == "append" else incoming` 뒤 |
 
-`bot.py:429`의 `body_blocks()`(`content_format.parse_content()`를 부르는 함수)에
-끼우는 방법도 있지만 권하지 않습니다. 이 함수는 저장 실패 후 재시도 경로
-(`bot.py:1199` `retry_pending()`)에서도 불리므로, 재시도할 때마다 AI를 다시
-호출하게 됩니다.
+**특히 「나」를 빠뜨리기 쉽습니다.** 3,000자 이상인 글은 `on_text()`의
+`if step == "content":` 블록을 **아예 지나가지 않고**, 그보다 위에 있는
+`if step == "content" and (session["collect"] is not None or len(value) >= LONG_CONTENT):`
+분기에서 이어받기 경로로 빠집니다. 「가」에만 AI를 끼우면 **짧은 글에만 AI가 걸리고
+긴 글은 그대로 저장되는 반쪽 구현**이 됩니다. 정리 내용은 길수록 다듬을 값어치가
+있으므로 정확히 거꾸로 된 결과입니다.
+
+**두 경로가 합쳐지는 한 지점은 없습니다.** 세 경로 모두 마지막에 `do_save()`로
+들어가지만, `do_save()`는 저장 실패 화면의 `[🔄 다시 시도]`(`on_button()`의
+`if action == "retry":` 분기)도 다시 부르는 함수라, 여기에 끼우면 재시도할 때마다
+AI를 또 호출하게 됩니다.
+
+**권하는 방법:** 세 자리는 아래 네 줄을 **글자 그대로 똑같이** 반복하고 있습니다.
+
+```python
+session["data"][FIELDS["content"]] = value
+reason = content_format.detect_corruption(value)
+if reason:
+    ...
+```
+
+이 꼬리를 함수 하나로 묶어 세 곳에서 부르게 만든 뒤, **그 함수 안 한 곳에만**
+AI를 끼우십시오. 그러면 나중에 입력 경로가 더 늘어나도 빠뜨릴 자리가 없습니다.
+
+`body_blocks()`(`content_format.parse_content()`를 부르는 함수)에 끼우는 방법도
+있지만 권하지 않습니다. 이 함수는 저장 실패 후 재시도 경로(`retry_pending()`)에서도
+불리므로, 재시도할 때마다 AI를 다시 호출하게 됩니다.
 
 **⚠️ 반드시 지켜야 할 것 — 서식 구간은 건드리면 안 됩니다.**
 
-`$$ ... $$` 수식 구간과 `:::code ... :::` 코드 구간을 AI가 고치면 저장이
-깨집니다. 모델이 `\%`를 `%`로 "고치면" 그 줄의 나머지가 조용히 사라지고
-(`docs/notion_template_spec.md` §14-2), 목록을 세 겹으로 다시 들여쓰면 노션이
-400으로 거부합니다(§14-3).
+`$$ ... $$` 수식 구간과 `:::code ... :::` 코드 구간을 AI가 고치면 내용이
+망가집니다. 모델이 `\%`를 `%`로 "고치면" 그 줄의 나머지가 조용히 사라지고
+(`docs/notion_template_spec.md` §14-2), 목록을 6칸 이상으로 다시 들여쓰면
+저장은 되지만 계층 구분이 사라집니다(§14-3).
 
 [content_format.py](./content_format.py)에 구간을 가르는 함수가 이미 있습니다.
 
-- `content_format.py:333` — `strip_code_blocks(text)`: `:::code` ~ `:::` 구간을
-  들어낸 글을 돌려줍니다. 원래 LaTeX 검사용이지만 구간을 가르는 방법이
-  `parse_content()`와 같으므로 참고할 수 있습니다.
+- [content_format.py](./content_format.py)의 `strip_code_blocks(text)` —
+  `:::code` ~ `:::` 구간을 들어낸 글을 돌려줍니다. 원래 LaTeX 검사용이지만
+  구간을 가르는 방법이 `parse_content()`와 같으므로 참고할 수 있습니다.
 
 **가장 안전한 방법은 문단만 골라 다듬는 것입니다.** `parse_content()`로 블록을
 만든 뒤 `paragraph` 블록의 글자만 AI에 보내고, `equation`·`code`·목록 블록은
@@ -90,14 +120,15 @@ v1에서 **AI를 의도적으로 제외했습니다.** 빼먹은 것이 아니�
 출전을 여러 방식으로 적은 것을 한 형식으로 맞춥니다. `참고출처`는 형식을 강제하지
 않는 칸이라(`docs/notion_template_spec.md` §10-6) 표기가 갈리기 쉽습니다.
 
-**어디:** [bot.py](./bot.py)의 `on_text()`, ①번과 같은 지점입니다.
+**어디:** [bot.py](./bot.py)의 `on_text()`입니다. 정리 내용과 달리 `참고출처`는
+**길이가 짧아 이어받기 경로를 타지 않으므로, 이 한 곳만 고치면 됩니다.**
 
-- `bot.py:2657` — `session["data"][FIELDS[step]] = value`
+찾을 코드 조각: `on_text()` 안의 `session["data"][FIELDS[step]] = value`
 
 이 줄 바로 뒤에 `if step == "basis":` 분기를 두고 값을 다듬어 다시 넣으면 됩니다.
-`basis`가 `참고출처` 단계의 이름입니다(`bot.py:95` 부근 `FIELDS`·`PROMPTS`).
+`basis`가 `참고출처` 단계의 이름입니다(bot.py 앞쪽 상수 블록의 `FIELDS`·`PROMPTS`).
 
-값은 `bot.py:451`의 `build_properties()`에서 `rich_text`로 노션에 올라갑니다.
+값은 `build_properties()`에서 `rich_text`로 노션에 올라갑니다.
 여기 말고 `build_properties()`에서 다듬어도 결과는 같지만, `on_text()`에서
 다듬으면 다듬어진 값이 세션에 남아 저장 실패 후 재시도할 때 AI를 다시 부르지
 않습니다.
@@ -119,29 +150,32 @@ v1에서 **AI를 의도적으로 제외했습니다.** 빼먹은 것이 아니�
 
 **어디:** 지금 봇은 **사진을 아예 받지 않습니다.** 새 핸들러를 등록해야 합니다.
 
-- `bot.py:2761` — `app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))`
+찾을 코드 조각: `main()` 안의
+`app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))`
 
 이 줄이 **글자 메시지만** 받도록 걸러 내고 있습니다. 바로 옆에
 `MessageHandler(filters.PHOTO, on_photo)`를 추가하고 `on_photo()`를 새로
 만들어야 합니다. 핸들러는 등록 순서대로 검사되므로, 사진 핸들러를 이 줄
 앞이나 뒤 어디에 두어도 필터가 겹치지 않아 상관없습니다.
 
-**새 핸들러가 반드시 따라야 할 기존 규칙** — `on_text()`(`bot.py:2591`)의
-앞부분을 그대로 본뜨면 됩니다.
+**새 핸들러가 반드시 따라야 할 기존 규칙** — `on_text()`의 앞부분을 그대로
+본뜨면 됩니다.
 
-1. **`is_allowed(update)`로 먼저 걸러냅니다**(`bot.py:1328`). 이걸 빠뜨리면
+1. **`is_allowed(update)`로 먼저 걸러냅니다.** 이걸 빠뜨리면
    아무나 내 봇에 사진을 보내 AI 호출 비용을 쓸 수 있습니다.
 2. **세션이 있는지, 지금 단계가 `content`인지 확인합니다.** `on_text()`가
    `context.user_data.get("session")`과 `STEPS[session["step"]]`으로 검사하는
    방식과 같게 두세요. 아무 때나 사진을 받으면 흐름이 엉킵니다.
 3. 뽑아낸 글자는 `session["data"]["정리 내용"]`에 넣고, 그다음은 `on_text()`와
    똑같이 `detect_corruption()` → `advance()` → `do_save()` 순서를 타게 합니다.
+   ①번에서 그 꼬리를 함수로 묶어 두었다면 **그 함수를 부르면 됩니다.**
 
 **⚠️ 뽑아낸 글자를 바로 저장하지 마세요.** OCR과 비전 모델은 수식에서 특히
 잘 틀립니다(`\frac`의 분자·분모가 뒤바뀌는 등). 사용자에게 보여 주고 확인받는
-화면을 하나 두는 것이 안전합니다. 손상 감지 화면(`bot.py:1163`
-`build_damage_text()`와 `DAMAGE_KEYBOARD`)이 `[🔁 그래도 저장] [❌ 취소]`
-형태로 이미 같은 구조를 쓰고 있으니 참고하세요.
+화면을 하나 두는 것이 안전합니다. 손상 감지 화면(`build_damage_text()`와
+`DAMAGE_KEYBOARD`)이 `[🔁 그래도 저장] [❌ 취소]` 형태로 이미 같은 구조를
+쓰고 있으니 참고하세요. 긴 글 이어받기 화면(`build_collect_text()`와
+`COLLECT_KEYBOARD`)도 "받은 것을 보여 주고 사용자가 확정하게 하는" 같은 구조입니다.
 
 ---
 
@@ -159,8 +193,8 @@ AI를 붙이면 **발급할 키가 2개에서 3개로 늘어납니다.** 배포�
   사람이 채울 방법이 없습니다.
 - 키가 비어 있을 때 **봇이 죽지 않아야 합니다.** AI는 부가 기능이므로, 키가
   없으면 AI 단계만 건너뛰고 기존 동작을 그대로 하는 편이 낫습니다. 지금
-  `bot.py:2710`의 `main()`은 텔레그램·노션 토큰이 없으면 `die()`로 즉시
-  종료하는데, AI 키는 그렇게 다루지 마세요.
+  `main()`은 텔레그램·노션 토큰이 없으면 `die()`로 즉시 종료하는데,
+  AI 키는 그렇게 다루지 마세요.
 
 **무료 한도 주의사항**
 
@@ -169,8 +203,9 @@ AI를 붙이면 **발급할 키가 2개에서 3개로 늘어납니다.** 배포�
   `/export`처럼 수십 건을 순회하는 흐름에서 건마다 AI를 부르면 금방 걸립니다.
   **`/export` 경로에는 AI를 넣지 않는 것을 권합니다.**
 - 한도를 넘으면 대개 `429`가 돌아옵니다. 이때 무한정 재시도하지 말고
-  **정해진 횟수만 시도한 뒤 포기하고 원문을 저장하세요.** `notion_common.py`의
-  `with_retry()`(`notion_common.py:102`)와 `RETRY_LIMIT`이 이 패턴의 예입니다.
+  **정해진 횟수만 시도한 뒤 포기하고 원문을 저장하세요.**
+  [notion_common.py](./notion_common.py)의 `with_retry()`와 `RETRY_LIMIT`이
+  이 패턴의 예입니다.
 - 유료 전환 시의 과금 단위(입력·출력 글자 수)를 확인하세요. 정리 내용은 한 건이
   수천 자가 될 수 있어, 건당 비용이 짧은 문장 요청과 크게 다릅니다.
 - AI 호출은 노션 호출보다 느립니다. 저장 전에 한 번 더 기다리는 것이 되므로,
@@ -184,7 +219,7 @@ AI를 붙이면 **발급할 키가 2개에서 3개로 늘어납니다.** 배포�
 python test_flow.py
 ```
 
-입력 흐름 검사가 31개 항목을 확인합니다. AI를 끼운 뒤에도 이 검사가 전부
+입력 흐름 검사가 60개 항목을 확인합니다. AI를 끼운 뒤에도 이 검사가 전부
 통과해야 합니다. 특히 정리 내용 단계를 건드렸다면 손상 감지 관련 항목이
 그대로 통과하는지 보세요.
 
