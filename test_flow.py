@@ -2091,6 +2091,410 @@ async def test_reshow_on_choice_screen():
 
 
 # ============================================================
+# 26. 긴 글 이어받기 (§1)
+# ============================================================
+# 실측: 텔레그램은 긴 글을 수식 한가운데가 아니라 **그 앞의 빈 줄**에서 잘라 보낸다.
+# 그래서 첫 조각만으로도 서식이 완결되어 곧바로 저장되고 뒷부분이 버려졌다.
+# 3,000자 이상이면 저장하지 않고 기다린다.
+
+# 이어받기 화면이 뜰 만큼 긴 원문. 문단마다 빈 줄로 나뉘어 있어 왕복 복원이 제자리다.
+LONG_HEAD = "\n\n".join(
+    f"보충 {i:02}: 공통매입세액은 과세사업과 면세사업에 공통으로 쓰인 매입세액이므로 공급가액 비율로 안분한다."
+    for i in range(1, 53)
+)
+LONG_TAIL = (
+    "- E: 자기자본의 시장가치\n"
+    "- D: 타인자본의 시장가치\n"
+    "- V = E + D\n"
+    "\n"
+    "법인세 절감효과는 타인자본비용에만 반영한다."
+)
+LONG_SOURCE = LONG_HEAD + "\n\n" + LONG_TAIL
+
+
+def check_round_trip(source, where):
+    """저장 → 내보내기 왕복이 원문과 같은지 본다 (§1의 완료 기준 4)."""
+    blocks = bot.body_blocks(source)
+    restored = content_format.blocks_to_markdown(blocks)
+    check(restored == source,
+          f"{where}: 왕복 복원이 원문과 다릅니다.\n"
+          f"      --- 원문 ---\n{source!r}\n      --- 복원 ---\n{restored!r}")
+
+
+@case("짧은 글은 이어받기 없이 전과 같이 바로 저장된다 (회귀)")
+async def test_collect_skipped_when_short():
+    short = "공통매입세액은 과세·면세 공급가액 비율로 안분한다."
+    check(len(short) < bot.LONG_CONTENT, "회귀 검사용 글이 이미 긴 글 기준을 넘습니다.")
+
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(short)
+    check("✅ 저장 완료" in flow.text, f"짧은 글이 바로 저장되지 않았습니다: {flow.text!r}")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    check(SENT[-1]["정리 내용"] == short, "저장된 내용이 다릅니다.")
+    check(flow.session["collect"] is None, "짧은 글인데 이어받기 상태가 생겼습니다.")
+
+
+@case("3,000자 이상 글 — 이어받기 화면이 뜨고 아직 저장되지 않는다")
+async def test_collect_opens():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+
+    check("긴 글을 받았습니다" in flow.text, f"이어받기 화면이 아닙니다: {flow.text!r}")
+    check(f"{len(LONG_HEAD)}자" in flow.text, f"글자 수가 보이지 않습니다: {flow.text!r}")
+    check(flow.has("✔️ 입력 완료"), f"[✔️ 입력 완료]가 없습니다. 지금 버튼: {flow.labels()}")
+    check(flow.has("❌ 처음부터"), f"[❌ 처음부터]가 없습니다. 지금 버튼: {flow.labels()}")
+    check(not SENT, "이어받기 화면이 떴는데 노션으로 보냈습니다.")
+    check(flow.session["collect"] == [LONG_HEAD], "이어받는 글이 세션에 담기지 않았습니다.")
+
+    # 손상 확인 화면(§15-2)과 겹치지 않는다: 아직 손상 감지를 돌리지 않는다
+    check(flow.session["damage"] is None, "이어받는 중에 손상 판정이 생겼습니다.")
+    check(flow.session["incoming"] is None, "이어받는 중에 보관 글이 생겼습니다.")
+
+
+@case("이어받기 중 글이 도착 — 이어붙고 화면의 글자 수가 갱신된다")
+async def test_collect_accumulates():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+    await flow.say(LONG_TAIL)
+
+    check(flow.session["collect"] == [LONG_HEAD, LONG_TAIL],
+          f"조각이 목록으로 쌓이지 않았습니다: {flow.session['collect']!r}")
+    check(bot.join_collected(flow.session["collect"]) == LONG_SOURCE,
+          "조각을 합친 결과가 원문과 다릅니다.")
+    check("긴 글을 받았습니다" in flow.text, f"이어받기 화면이 아닙니다: {flow.text!r}")
+    check(f"{len(LONG_SOURCE)}자" in flow.text, f"글자 수가 갱신되지 않았습니다: {flow.text!r}")
+    check(not SENT, "고르기도 전에 노션으로 보냈습니다.")
+
+    # 이어받기 상태는 저장 전 임시 상태다. 백업 파일에는 들어가지 않는다 (§1)
+    check(bot.read_pending()[0] == [], "이어받기 상태가 백업 파일에 들어갔습니다.")
+
+
+@case("문단 경계에서 잘린 재현 — 빈 줄이 살아나고 왕복 복원이 원문과 같다")
+async def test_collect_split_at_paragraph():
+    # 텔레그램이 빈 줄에서 자른 모양. 양쪽 조각 모두 앞뒤 공백이 없다.
+    first, second = LONG_HEAD, LONG_TAIL
+    check(first + "\n\n" + second == LONG_SOURCE, "자른 두 조각이 원문을 이루지 않습니다.")
+    check(first == first.strip() and second == second.strip(),
+          "조각의 앞뒤에 공백이 남아 있어 텔레그램 전송 모양과 다릅니다.")
+
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(first)
+    await flow.say(second)
+    await flow.press("✔️ 입력 완료")
+
+    check("✅ 저장 완료" in flow.text, f"저장되지 않았습니다: {flow.text!r}")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    saved = SENT[-1]["정리 내용"]
+    check(saved == LONG_SOURCE,
+          f"이어붙인 결과가 원문과 다릅니다.\n      저장된 것: {saved!r}")
+    check("안분한다.\n\n- E:" in saved, f"원래 있던 빈 줄이 사라졌습니다: {saved[-200:]!r}")
+    check_round_trip(saved, "문단 경계 재현")
+
+
+@case("문단 한가운데(목록 항목 내부)에서 잘린 재현 — 없던 빈 줄이 생기지 않는다")
+async def test_collect_split_inside_block():
+    # 목록 블록 한가운데. 원문의 이 자리에는 빈 줄이 없다.
+    first = LONG_HEAD + "\n\n- E: 자기자본의 시장가치"
+    second = "- D: 타인자본의 시장가치\n- V = E + D\n\n법인세 절감효과는 타인자본비용에만 반영한다."
+    check(first + "\n" + second == LONG_SOURCE, "자른 두 조각이 원문을 이루지 않습니다.")
+    check(len(first) >= bot.LONG_CONTENT, "앞 조각이 긴 글 기준에 못 미칩니다.")
+
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(first)
+    await flow.say(second)
+    await flow.press("✔️ 입력 완료")
+
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    saved = SENT[-1]["정리 내용"]
+    check(saved == LONG_SOURCE,
+          f"이어붙인 결과가 원문과 다릅니다.\n      저장된 것: {saved!r}")
+    check("시장가치\n- D:" in saved, f"없던 빈 줄이 생겼습니다: {saved[-200:]!r}")
+    check_round_trip(saved, "목록 항목 내부 재현")
+
+    # 목록이 문단으로 쪼개지지 않고 항목 그대로 들어갔는지 본다
+    kinds = types_of(body_of(SENT[-1]))
+    check(kinds.count("bulleted_list_item") == 3,
+          f"목록 항목 3개가 그대로 들어가지 않았습니다. 블록 종류: {kinds[-6:]}")
+
+
+@case("이어받기 [✔️ 입력 완료] — 합친 글이 깨졌으면 손상 확인 화면으로 넘어간다")
+async def test_collect_then_damage():
+    broken = LONG_HEAD + "\n\n$$\nWACC = w_e r_e + w_d r_d"
+    check(len(broken) >= bot.LONG_CONTENT, "앞 조각이 긴 글 기준에 못 미칩니다.")
+
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(broken)
+    check("긴 글을 받았습니다" in flow.text, f"이어받기 화면이 아닙니다: {flow.text!r}")
+
+    await flow.press("✔️ 입력 완료")
+    check("서식이 깨진 것 같습니다" in flow.text, f"손상 확인 화면이 아닙니다: {flow.text!r}")
+    check("`$$`" in flow.text, f"수식 구분자 판정이 아닙니다: {flow.text!r}")
+    check(not SENT, "손상 판정이 났는데 노션으로 보냈습니다.")
+    check(flow.session["collect"] is None, "손상 확인으로 넘어간 뒤 이어받기 상태가 남았습니다.")
+    check(flow.session["damage"] is not None, "손상 판정이 세션에 담기지 않았습니다.")
+    check(flow.session["data"]["정리 내용"] == broken, "합친 글이 세션에 남지 않았습니다.")
+
+    # 여기서부터는 기존 §15-2 화면 그대로 동작한다
+    check(flow.has("🔁 그래도 저장"), f"강행 저장 버튼이 없습니다. 지금 버튼: {flow.labels()}")
+    await flow.press("🔁 그래도 저장")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    check(SENT[-1]["정리 내용"] == broken, "합친 글이 아닌 것이 저장됐습니다.")
+
+
+@case("이어받기 상태가 [❌ 처음부터]·저장 완료·새 흐름에서 남지 않는다")
+async def test_collect_state_cleared():
+    # (1) [❌ 처음부터] → 세션째 사라진다
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+    check(flow.session["collect"] is not None, "이어받기 상태가 생기지 않았습니다.")
+    await flow.press("❌ 처음부터")
+    check(flow.session is None, "[❌ 처음부터] 뒤에도 세션이 남아 있습니다.")
+    check(not SENT, "[❌ 처음부터]를 눌렀는데 노션으로 보냈습니다.")
+
+    # (2) 저장 완료 뒤
+    flow2 = Flow()
+    await content_step(flow2)
+    await flow2.say(LONG_HEAD)
+    await flow2.say(LONG_TAIL)
+    await flow2.press("✔️ 입력 완료")
+    check("✅ 저장 완료" in flow2.text, f"저장되지 않았습니다: {flow2.text!r}")
+    check(flow2.session["collect"] is None, "저장 완료 뒤에 이어받기 상태가 남았습니다.")
+    check(bot.read_pending()[0] == [], "저장이 끝났는데 백업 파일에 항목이 남았습니다.")
+
+    # (3) [📌 같은 문제로 하나 더]로 이어지는 새 흐름
+    await flow2.press("📌 같은 문제로 하나 더")
+    check(flow2.session["collect"] is None, "[📌 같은 문제로 하나 더] 뒤에 이어받기 상태가 남았습니다.")
+
+    # (4) /new 로 새로 시작
+    flow3 = Flow()
+    await content_step(flow3)
+    await flow3.say(LONG_HEAD)
+    await flow3.command(bot.cmd_new)
+    check(flow3.session["collect"] is None, "/new 뒤에 이어받기 상태가 남았습니다.")
+
+
+@case("이어받기 중 오류 — 재표시가 이어받기 화면을 그대로 다시 그린다")
+async def test_collect_reshow():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+
+    await flow.raise_error()
+    check("저장하기 전 단계라" in flow.screen.messages[-2],
+          f"작성 중 오류 안내가 아닙니다: {flow.screen.messages[-2]!r}")
+    check("긴 글을 받았습니다" in flow.text,
+          f"오류 뒤에 이어받기 화면을 다시 그리지 않았습니다: {flow.text!r}")
+    check(flow.session["collect"] == [LONG_HEAD], "오류 뒤 모아 둔 글이 사라졌습니다.")
+    check(not SENT, "오류 처리 중에 노션으로 보냈습니다.")
+
+    # 다시 그린 화면에서 그대로 이어서 마칠 수 있다
+    await flow.say(LONG_TAIL)
+    await flow.press("✔️ 입력 완료")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    check(SENT[-1]["정리 내용"] == LONG_SOURCE, "오류 뒤 이어붙인 결과가 원문과 다릅니다.")
+
+
+@case("조각 잇기 판정 — 문단 경계는 빈 줄, 문단 안은 줄바꿈 하나 (§2)")
+async def test_join_long_pieces_rule():
+    # WACC 규격 원문을 줄 단위로 모두 잘라 보며, 구분자 선택이 늘 맞는지 본다.
+    lines = WACC_SOURCE.split("\n")
+    wrong = []
+    for i in range(1, len(lines)):
+        if lines[i - 1] == "":
+            # 원문의 빈 줄 자리에서 잘린 경우 = 문단 경계. 빈 줄을 되돌려야 한다.
+            first, second, want = "\n".join(lines[:i - 1]), "\n".join(lines[i:]), "\n\n"
+        else:
+            # 문단(블록) 한가운데에서 잘린 경우. 줄바꿈 하나여야 한다.
+            first, second, want = "\n".join(lines[:i]), "\n".join(lines[i:]), "\n"
+        first = first.strip()
+        if not first or not second.strip():
+            continue
+        joined = bot.join_long_pieces(first, second)
+        if joined[len(first):len(first) + len(want)] != want:
+            wrong.append((i, repr(lines[i - 1]), repr(lines[i])))
+    check(not wrong, f"구분자를 잘못 고른 자리가 있습니다: {wrong}")
+
+    # 기존 §15-2 경로의 join_pieces는 건드리지 않았다 (회귀)
+    check(bot.join_pieces("가", "나") == "가\n나", "join_pieces의 동작이 바뀌었습니다.")
+
+
+# ============================================================
+# 27. 이어받기 화면 개선 — 분량·마지막 줄 표시, 조각 취소, 중복 확인
+# ============================================================
+# 실사용에서 발견된 사고: 텔레그램이 자동으로 이어 준 뒷부분을 사용자가
+# 눈치채지 못하고 그 뒷부분을 또 복사해 보내, 같은 내용이 두 번 들어갔다.
+# 원인은 (a) 지금까지 무엇이 들어왔는지 화면에서 확인할 방법이 없었고,
+# (b) "자동으로 들어온다"는 사실이 눈에 띄지 않았으며, (c) 잘못 보냈을 때
+# [❌ 처음부터] 말고는 되돌릴 방법이 없었던 것. 아래는 이 세 가지를 고친다.
+
+LONG_TAIL_LAST_LINE = "법인세 절감효과는 타인자본비용에만 반영한다."
+
+
+@case("이어받기 화면에 분량과 마지막 줄이 표시된다")
+async def test_collect_shows_length_and_last_line():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+
+    check(f"약 {len(LONG_HEAD)}자" in flow.text, f"분량이 보이지 않습니다: {flow.text!r}")
+    check("마지막으로 받은 줄" in flow.text, f"마지막 줄 항목이 없습니다: {flow.text!r}")
+    last_line = LONG_HEAD.split("\n\n")[-1]
+    check(last_line in flow.text, f"마지막 줄 내용이 다릅니다: {flow.text!r}")
+    # 완료 기준 2 — "자동으로 들어온다"는 사실이 눈에 띄게 적혀 있어야 한다.
+    # 이번 사고의 핵심 원인이므로 문구 존재를 직접 검사한다.
+    check("자동으로 들어옵니다" in flow.text, f"자동 이어붙임 안내가 없습니다: {flow.text!r}")
+
+
+@case("조각 도착 시 분량과 마지막 줄이 갱신된다")
+async def test_collect_updates_length_and_last_line():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+    await flow.say(LONG_TAIL)
+
+    check(f"약 {len(LONG_SOURCE)}자" in flow.text, f"분량이 갱신되지 않았습니다: {flow.text!r}")
+    check(LONG_TAIL_LAST_LINE in flow.text, f"마지막 줄이 갱신되지 않았습니다: {flow.text!r}")
+    # 옛 마지막 줄(첫 조각의 끝)은 더 이상 "마지막 줄"이 아니어야 한다
+    old_last_line = LONG_HEAD.split("\n\n")[-1]
+    check(old_last_line not in flow.text, f"옛 마지막 줄이 그대로 남아 있습니다: {flow.text!r}")
+
+
+@case("[↩️ 마지막 조각 취소] — 직전 조각만 되돌아가고 분량이 줄어든다")
+async def test_collect_undo_last_piece():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+    await flow.say(LONG_TAIL)
+    check(flow.session["collect"] == [LONG_HEAD, LONG_TAIL], "조각이 예상과 다르게 쌓였습니다.")
+
+    await flow.press("↩️ 마지막 조각 취소")
+    check(flow.session["collect"] == [LONG_HEAD], "취소 뒤에도 둘째 조각이 남아 있습니다.")
+    check(f"약 {len(LONG_HEAD)}자" in flow.text, f"취소 뒤 분량이 줄지 않았습니다: {flow.text!r}")
+    check(not SENT, "취소하는 동안 노션으로 보냈습니다.")
+
+
+@case("[↩️ 마지막 조각 취소]를 두 번 — 두 조각이 차례로 되돌아간다")
+async def test_collect_undo_twice():
+    # LONG_TAIL을 목록 부분과 마지막 문단으로 나눠, 이미 이어받는 중인 화면에
+    # 조각 두 개를 차례로 더 보낸다 (첫 조각은 LONG_HEAD 자체로 이미 기준을 넘는다).
+    tail_lines = LONG_TAIL.split("\n")
+    piece_b = "\n".join(tail_lines[:3])   # 목록 세 줄
+    piece_c = tail_lines[4]               # 마지막 문단
+    check(piece_b + "\n\n" + piece_c == LONG_TAIL, "두 조각이 LONG_TAIL을 이루지 않습니다.")
+
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+    await flow.say(piece_b)
+    await flow.say(piece_c)
+    check(flow.session["collect"] == [LONG_HEAD, piece_b, piece_c],
+          f"조각이 예상과 다릅니다: {flow.session['collect']!r}")
+    check(bot.join_collected(flow.session["collect"]) == LONG_SOURCE, "세 조각을 합친 결과가 원문과 다릅니다.")
+
+    await flow.press("↩️ 마지막 조각 취소")
+    check(flow.session["collect"] == [LONG_HEAD, piece_b], "첫 취소가 셋째 조각을 지우지 않았습니다.")
+    await flow.press("↩️ 마지막 조각 취소")
+    check(flow.session["collect"] == [LONG_HEAD], "둘째 취소가 둘째 조각을 지우지 않았습니다.")
+    check(not SENT, "취소하는 동안 노션으로 보냈습니다.")
+
+
+@case("첫 조각만 남은 상태에서 취소 — 안내만 나오고 상태가 유지된다")
+async def test_collect_undo_at_first_piece():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+    check(flow.session["collect"] == [LONG_HEAD], "조각이 예상과 다릅니다.")
+
+    await flow.press("↩️ 마지막 조각 취소")
+    check(flow.session["collect"] == [LONG_HEAD], "되돌릴 것이 없는데 조각이 바뀌었습니다.")
+    check("되돌릴 조각이 없습니다" in flow.text, f"안내 문구가 없습니다: {flow.text!r}")
+    check("처음부터" in flow.text, f"[❌ 처음부터] 안내가 없습니다: {flow.text!r}")
+    check(not SENT, "안내만 나와야 하는데 노션으로 보냈습니다.")
+
+    # 화면은 여전히 이어받기 화면이다 — 그대로 이어서 마칠 수 있다
+    check(flow.has("✔️ 입력 완료"), f"[✔️ 입력 완료]가 사라졌습니다. 지금 버튼: {flow.labels()}")
+
+
+@case("중복 조각 도착 — 확인 화면이 뜨고, 자동으로 이어붙이지 않는다")
+async def test_collect_duplicate_detected():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+    await flow.say(LONG_TAIL)
+    check(flow.session["collect"] == [LONG_HEAD, LONG_TAIL], "조각이 예상과 다릅니다.")
+
+    # 텔레그램이 자동으로 이어 준 LONG_TAIL을, 사용자가 모르고 다시 보낸 상황.
+    await flow.say(LONG_TAIL)
+    check("이미 들어와 있는 것 같습니다" in flow.text, f"중복 확인 화면이 아닙니다: {flow.text!r}")
+    check(flow.has("➕ 그래도 이어붙이기"), f"[➕ 그래도 이어붙이기]가 없습니다. 지금 버튼: {flow.labels()}")
+    check(flow.has("↩️ 이번 것은 버리기"), f"[↩️ 이번 것은 버리기]가 없습니다. 지금 버튼: {flow.labels()}")
+    # 고르기 전에는 조용히 이어붙이지 않는다 — 조각 목록도, 화면의 분량도 그대로다.
+    check(flow.session["collect"] == [LONG_HEAD, LONG_TAIL], "고르기도 전에 조각이 이어붙었습니다.")
+    check(flow.session["collect_dup"] == LONG_TAIL, "중복 후보가 보관되지 않았습니다.")
+    check(not SENT, "중복 확인 화면이 떴는데 노션으로 보냈습니다.")
+
+
+@case("중복 확인 — [↩️ 이번 것은 버리기]는 분량을 바꾸지 않는다")
+async def test_collect_duplicate_drop():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+    await flow.say(LONG_TAIL)
+    await flow.say(LONG_TAIL)  # 중복
+
+    await flow.press("↩️ 이번 것은 버리기")
+    check(flow.session["collect"] == [LONG_HEAD, LONG_TAIL], "버리기 뒤 조각이 바뀌었습니다.")
+    check(flow.session["collect_dup"] is None, "버린 중복 후보가 세션에 남아 있습니다.")
+    check(f"약 {len(LONG_SOURCE)}자" in flow.text, f"버리기 뒤 분량이 바뀌었습니다: {flow.text!r}")
+    check(not SENT, "버리기를 눌렀는데 노션으로 보냈습니다.")
+
+    # 되돌아온 화면에서 그대로 마칠 수 있다
+    await flow.press("✔️ 입력 완료")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    check(SENT[-1]["정리 내용"] == LONG_SOURCE, "버리기 뒤 저장된 내용이 원문과 다릅니다.")
+
+
+@case("조각 취소·중복 처리를 거친 뒤에도 저장 내용이 원문과 일치한다")
+async def test_collect_after_undo_and_duplicate_matches_original():
+    flow = Flow()
+    await content_step(flow)
+    await flow.say(LONG_HEAD)
+    await flow.say(LONG_TAIL)
+    check(flow.session["collect"] == [LONG_HEAD, LONG_TAIL], "조각이 예상과 다릅니다.")
+
+    # 취소했다가 같은 조각을 다시 보낸다 (이번엔 이미 받은 글에 없으므로 중복이 아니다)
+    await flow.press("↩️ 마지막 조각 취소")
+    check(flow.session["collect"] == [LONG_HEAD], "취소가 되지 않았습니다.")
+    await flow.say(LONG_TAIL)
+    check(flow.session["collect"] == [LONG_HEAD, LONG_TAIL], "재전송이 이어붙지 않았습니다.")
+
+    # 이제 같은 조각을 또 보내면 중복으로 걸린다
+    await flow.say(LONG_TAIL)
+    check("이미 들어와 있는 것 같습니다" in flow.text, f"중복 확인 화면이 아닙니다: {flow.text!r}")
+
+    # 이번엔 [➕ 그래도 이어붙이기]로 강행한 뒤, 잘못 눌렀다 생각해 다시 취소한다
+    await flow.press("➕ 그래도 이어붙이기")
+    check(flow.session["collect"] == [LONG_HEAD, LONG_TAIL, LONG_TAIL], "이어붙이기가 반영되지 않았습니다.")
+    await flow.press("↩️ 마지막 조각 취소")
+    check(flow.session["collect"] == [LONG_HEAD, LONG_TAIL], "되돌리기가 반영되지 않았습니다.")
+
+    await flow.press("✔️ 입력 완료")
+    check("✅ 저장 완료" in flow.text, f"저장되지 않았습니다: {flow.text!r}")
+    check(len(SENT) == 1, f"기록이 1건이어야 하는데 {len(SENT)}건입니다.")
+    check(SENT[-1]["정리 내용"] == LONG_SOURCE,
+          f"취소·중복 처리를 거친 저장 내용이 원문과 다릅니다.\n      저장된 것: {SENT[-1]['정리 내용']!r}")
+    check(flow.session["collect"] is None, "저장 뒤 이어받기 상태가 남았습니다.")
+    check(flow.session["collect_dup"] is None, "저장 뒤 중복 후보 상태가 남았습니다.")
+
+
+# ============================================================
 # 실행
 # ============================================================
 async def run_all():

@@ -585,6 +585,8 @@ def new_session():
         "saved": False,
         "damage": None,      # 손상 정황 안내문. 강행/취소를 고르기 전까지만 담긴다 (명세서 §15-2)
         "incoming": None,    # 손상 확인 화면에 서 있는 동안 도착한 새 글. 고르기 전까지만 담긴다
+        "collect": None,     # 긴 글 이어받기 화면에서 지금까지 받은 조각 목록. None이면 이어받는 중이 아니다
+        "collect_dup": None,  # 중복으로 보이는 조각. 이어붙일지 버릴지 고르기 전까지만 담긴다 (§3)
     }
 
 
@@ -1128,6 +1130,8 @@ async def do_save(session, context, chat_id, query=None):
     # [📌 같은 문제로 하나 더] 흐름에서 엉뚱한 화면이 뜬다. 여기서 확실히 지운다.
     session["damage"] = None
     session["incoming"] = None
+    session["collect"] = None
+    session["collect_dup"] = None
     text = build_saved_text(session)
     if notes:
         # 수식이 코드블록으로 바뀐 안내 (명세서 §13-3). 저장 자체는 성공이다.
@@ -1200,6 +1204,8 @@ def restart_same_problem(session):
     session["resume"] = None
     session["damage"] = None
     session["incoming"] = None
+    session["collect"] = None
+    session["collect_dup"] = None
     # 개념태그·오답유형은 KEEP_FIELDS에 없으므로 위에서 이미 지워졌다.
     # 화면에 남은 태그 목록도 비워 다음 기록에 선택이 따라붙지 않게 한다.
     reset_tag_screen(session)
@@ -1300,6 +1306,149 @@ def build_incoming_text(session):
         "긴 글이 둘로 나뉘어 온 것이라면 [➕ 이어붙이기],\n"
         "컴퓨터에서 다시 보낸 것이라면 [🔄 새 글로 바꾸기]를 고르세요.\n"
         "잘못 보낸 글이라면 [↩️ 새 글 버리기]로 앞 화면으로 돌아갑니다."
+    )
+
+
+# ============================================================
+# 긴 글 이어받기
+# ============================================================
+# 실측(데스크톱 텔레그램): 4,096자를 넘는 글은 수식·도식 한가운데가 아니라
+# **그 앞의 빈 줄(문단 경계)**에서 잘려 두 메시지로 온다. 그래서 첫 조각만으로도
+# `$$`·`:::`의 짝이 맞는 완결된 글이 되어 손상 감지에 걸리지 않고 곧바로 저장되고,
+# 뒷 조각은 "저장되지 않았습니다" 안내와 함께 버려졌다.
+#
+# 잘린 뒤에 복구할 방법이 없으므로, 길어 보이는 글은 **저장하기 전에 잠시 기다린다.**
+LONG_CONTENT = 3000   # 이 길이부터 이어받기 화면으로 간다. 정확한 계산이 아니라 여유 기준이다.
+
+# 화면에 보여줄 "마지막으로 받은 줄"의 최대 길이. 원문 자체가 아니라 대조용
+# 미리보기이므로, 텔레그램 메시지 길이 제한과는 별개로 짧게 자른다.
+COLLECT_LAST_LINE_LIMIT = 80
+
+COLLECT_KEYBOARD = InlineKeyboardMarkup([
+    [InlineKeyboardButton("✔️ 입력 완료 · 저장", callback_data="col:done")],
+    [InlineKeyboardButton("↩️ 마지막 조각 취소", callback_data="col:undo")],
+    [InlineKeyboardButton("❌ 처음부터", callback_data="reset")],
+])
+
+# 중복 조각 확인 화면 (§3). 자동으로 버리지 않고 반드시 묻는다 — 오탐(원문에
+# 같은 문단이 실제로 두 번 나오는 경우)이 있을 수 있기 때문이다.
+COLLECT_DUP_KEYBOARD = InlineKeyboardMarkup([[
+    InlineKeyboardButton("➕ 그래도 이어붙이기", callback_data="col:dup:append"),
+    InlineKeyboardButton("↩️ 이번 것은 버리기", callback_data="col:dup:drop"),
+]])
+
+
+def seam_is_natural(first, second):
+    """두 조각을 줄바꿈 **하나**로 이은 자리가 서식상 자연스러운가.
+
+    텔레그램이 어디서 잘랐는지는 알 수 없고, 원문의 그 자리에 빈 줄이 있었는지도
+    조각만 봐서는 알 수 없다. 대신 **이어붙인 글이 스스로 앞뒤가 맞는지**를 본다.
+    블록으로 바꿨다가 다시 글로 되돌렸을 때 그대로면(= 왕복이 제자리면) 줄바꿈
+    하나가 맞는 자리이고, 되돌린 글에 빈 줄이 새로 생기면 원문에 빈 줄이 있던
+    자리다.
+
+        - `- 항목1` + `- 항목2`   → 되돌려도 그대로     → 줄바꿈 하나 (문단 안)
+        - `문단` + `## 제목`      → 되돌리면 빈 줄 생김 → 줄바꿈 둘 (문단 경계)
+
+    글 전체가 아니라 **이은 자리 주변만** 본다. 앞뒤 먼 곳에 빈 줄 없이 이어진
+    문단이 있으면 글 전체는 어차피 왕복이 제자리가 아니어서, 판정이 늘 한쪽으로
+    쏠린다. 파서와 복원기를 읽기만 할 뿐 규칙은 건드리지 않는다.
+    """
+    window = first.rsplit("\n\n", 1)[-1] + "\n" + second.split("\n\n", 1)[0]
+    return content_format.blocks_to_markdown(content_format.parse_content(window)) == window
+
+
+def join_long_pieces(first, second):
+    """이어받기로 모은 두 조각을 잇는다. 사이에 줄바꿈을 하나 넣을지 둘 넣을지 정한다.
+
+    문단 경계에서 잘렸다면 원문에 있던 빈 줄을 되돌려야 하고(줄바꿈 둘),
+    문단 안에서 잘렸다면 없던 빈 줄을 만들지 말아야 한다(줄바꿈 하나).
+    둘을 가르는 판정은 seam_is_natural()에 있다. 가르지 못하는 자리에서는
+    빈 줄을 넣는 쪽으로 기운다 — 실제로 잘리는 자리가 문단 경계이기 때문이다.
+    """
+    return f"{first}\n{second}" if seam_is_natural(first, second) else f"{first}\n\n{second}"
+
+
+def join_collected(pieces):
+    """이어받기로 모은 조각 목록을 하나의 글로 합친다.
+
+    조각을 화면에서 되돌릴 수 있어야 하므로 세션에는 목록으로 보관하고,
+    합칠 때만 이 함수를 부른다. 조각 사이를 잇는 규칙(줄바꿈 하나 vs 둘)은
+    join_long_pieces() 그대로이며 여기서는 바꾸지 않는다.
+    """
+    text = pieces[0]
+    for piece in pieces[1:]:
+        text = join_long_pieces(text, piece)
+    return text
+
+
+def is_duplicate_piece(collected_text, value):
+    """새로 도착한 조각이 이미 받아 둔 글 안에 그대로 들어 있는가 (§3).
+
+    텔레그램이 나눠 보낸 뒷부분이 자동으로 들어온 뒤, 사용자가 그 부분을
+    알아채지 못하고 다시 복사해 보내는 사고를 잡는 것이 목적이다. 판정은
+    단순한 부분 문자열 포함 여부뿐이다 — 정교한 유사도 계산은 만들지 않는다.
+    원문에 같은 문단이 실제로 두 번 나오는 경우도 여기 걸릴 수 있으므로
+    (오탐 가능), 조용히 버리지 않고 반드시 사용자에게 물어 처리한다.
+    """
+    return bool(value) and value in collected_text
+
+
+def last_line_preview(text):
+    """지금까지 받은 글의 마지막 줄(빈 줄 제외)을, 대조하기 좋은 길이로 자른다.
+
+    사용자가 이 줄을 원문의 실제 마지막 줄과 눈으로 대조해 더 보낼지
+    판단하는 것이 목적이므로, 줄이 길면 **뒤쪽**을 남기고 앞을 잘라
+    "…"로 표시한다. 원문과 대조할 때 중요한 것은 그 줄이 어디서 끝나는가다.
+    """
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if not lines:
+        return "(빈 줄)"
+    line = lines[-1]
+    if len(line) > COLLECT_LAST_LINE_LIMIT:
+        return "…" + line[-COLLECT_LAST_LINE_LIMIT:]
+    return line
+
+
+def build_collect_text(session):
+    """이어받는 중임을 보이고, 지금까지 받은 분량과 마지막 줄을 알려 주는 화면.
+
+    "마지막으로 받은 줄"은 사용자가 원문 끝과 눈으로 대조해 더 보낼지 판단하는
+    유일한 근거다. "자동으로 들어온다"는 사실도 눈에 띄게 적는다 — 이 사실을
+    모른 채 이미 들어온 뒷부분을 또 보내 중복 저장된 사고가 실제로 있었다.
+    """
+    joined = join_collected(session["collect"])
+    return (
+        "📝 긴 글을 받았습니다.\n\n"
+        f"지금까지 받은 분량: 약 {len(joined)}자\n"
+        "마지막으로 받은 줄:\n"
+        f'  "{last_line_preview(joined)}"\n\n'
+        "⚠️ 텔레그램이 나눠 보낸 뒷부분은 자동으로 들어옵니다.\n"
+        "위 '마지막으로 받은 줄'이 원문의 맨 끝과 같으면\n"
+        "[✔️ 입력 완료 · 저장]을 눌러 주세요.\n\n"
+        "다르다면, 그 줄 다음부터 이어서 보내 주세요.\n"
+        "잘못 이어붙었다면 [↩️ 마지막 조각 취소]로 되돌릴 수 있습니다."
+    )
+
+
+def build_collect_undo_empty_text(session):
+    """[↩️ 마지막 조각 취소]를 눌렀는데 되돌릴 조각이 없을 때(=조각이 하나뿐일 때)."""
+    return (
+        build_collect_text(session)
+        + "\n\n⚠️ 더 되돌릴 조각이 없습니다. 처음부터 다시 쓰려면 [❌ 처음부터]를 눌러 주세요."
+    )
+
+
+def build_collect_dup_text(session):
+    """새 조각이 이미 받은 글 안에 있는 것 같을 때의 확인 화면 (§3)."""
+    joined = join_collected(session["collect"])
+    return (
+        "⚠️ 방금 받은 내용이 이미 들어와 있는 것 같습니다.\n"
+        "텔레그램이 나눠 보낸 뒷부분은 자동으로 들어오므로,\n"
+        "같은 내용을 다시 보내면 두 번 들어갑니다.\n\n"
+        f"지금까지 받은 분량: 약 {len(joined)}자 (방금 받은 내용은 아직 더하지 않았습니다)\n\n"
+        "그래도 이어붙이려면 [➕ 그래도 이어붙이기]를,\n"
+        "잘못 보낸 것이라면 [↩️ 이번 것은 버리기]를 눌러 주세요."
     )
 
 
@@ -2644,6 +2793,59 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show(session, context, chat_id, query)
         return
 
+    # 긴 글 이어받기 화면의 [↩️ 마지막 조각 취소].
+    # 조각 하나만 되돌린다. 여러 번 눌러 여러 조각을 차례로 되돌릴 수 있다.
+    if action == "col:undo":
+        if session["collect"] is None:
+            return
+        if session["collect_dup"] is not None:
+            # 중복 확인 화면 위에 남은 옛 이어받기 버튼을 누른 경우다. 여기서
+            # 조각을 지우면 중복 여부를 고르기도 전에 상태가 어긋난다.
+            await send(session, context, chat_id, build_collect_dup_text(session), COLLECT_DUP_KEYBOARD, query)
+            return
+        if len(session["collect"]) <= 1:
+            # 첫 조각까지 지우면 빈 상태가 된다. 그건 [❌ 처음부터]의 몫이다.
+            await send(session, context, chat_id, build_collect_undo_empty_text(session), COLLECT_KEYBOARD, query)
+            return
+        session["collect"].pop()
+        await send(session, context, chat_id, build_collect_text(session), COLLECT_KEYBOARD, query)
+        return
+
+    # 중복으로 보이는 조각 확인 화면의 두 버튼 (§3).
+    if action in ("col:dup:append", "col:dup:drop"):
+        if session["collect"] is None or session["collect_dup"] is None:
+            return
+        if action == "col:dup:append":
+            session["collect"].append(session["collect_dup"])
+        session["collect_dup"] = None
+        await send(session, context, chat_id, build_collect_text(session), COLLECT_KEYBOARD, query)
+        return
+
+    # 긴 글 이어받기 화면의 [✔️ 입력 완료 · 저장].
+    # 여기서 처음으로 합친 글 전체에 손상 감지를 한 번 돌린다.
+    # ([❌ 처음부터]는 위 "reset"이 세션째 버리므로 이어받기 상태도 함께 사라진다)
+    if action == "col:done":
+        if session["collect"] is None:
+            return
+        if session["collect_dup"] is not None:
+            # 중복 확인을 아직 고르지 않았다. 그 새 글이 조용히 사라지면 안 되므로
+            # 고르기 전에는 저장하지 않는다는 원칙대로 확인 화면을 다시 띄운다.
+            await send(session, context, chat_id, build_collect_dup_text(session), COLLECT_DUP_KEYBOARD, query)
+            return
+        value = join_collected(session["collect"])
+        session["collect"] = None
+        session["data"][FIELDS["content"]] = value
+        reason = content_format.detect_corruption(value)
+        if reason:
+            session["damage"] = reason
+            await send(session, context, chat_id, build_damage_text(reason), DAMAGE_KEYBOARD, query)
+            return
+        if advance(session):
+            await do_save(session, context, chat_id, query)
+        else:
+            await show(session, context, chat_id, query)
+        return
+
     if session["step"] >= len(STEPS):
         # 저장이 끝난 기록의 옛 입력 화면에 남아 있는 버튼을 누른 경우다.
         # 예전에는 조용히 무시해서 [⬅️ 뒤로]가 아무 반응이 없는 것처럼 보였다
@@ -2865,6 +3067,39 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show(session, context, chat_id)
         return
 
+    # 긴 글 이어받기. 손상 감지보다 **앞**이다 (겹치지 않게 하는 지점).
+    #   - 이어받기로 들어갈 때 옛 손상 판정·보관 글을 지운다.
+    #   - 이어받는 동안에는 손상 감지를 아직 돌리지 않으므로 damage가 생기지 않는다.
+    # 그래서 damage와 collect가 동시에 차 있는 상태는 만들어지지 않고, 위쪽의
+    # "손상 확인 중 새 글 도착" 분기와 이 분기는 서로 배타적이다.
+    if step == "content" and (session["collect"] is not None or len(value) >= LONG_CONTENT):
+        if session["collect"] is None:
+            session["damage"] = None
+            session["incoming"] = None
+            session["collect"] = [value]
+            await send(session, context, chat_id, build_collect_text(session), COLLECT_KEYBOARD)
+            return
+
+        if session["collect_dup"] is not None:
+            # 중복 확인 화면에 서 있는 동안 또 조각이 온 경우다. 고르기 전에는
+            # 판정하지 않고, 손상 확인 중 새 글이 겹쳐 오는 경우와 같은 방식으로
+            # 보관 중인 후보 뒤에 쌓는다.
+            session["collect_dup"] = join_long_pieces(session["collect_dup"], value)
+            await send(session, context, chat_id, build_collect_dup_text(session), COLLECT_DUP_KEYBOARD)
+            return
+
+        # 새 조각이 이미 받아 둔 글에 그대로 들어 있으면(§3), 조용히 이어붙이지
+        # 않고 먼저 묻는다. 텔레그램이 자동으로 이어 준 뒷부분을 사용자가
+        # 모르고 또 보내는 사고를 여기서 잡는다.
+        if is_duplicate_piece(join_collected(session["collect"]), value):
+            session["collect_dup"] = value
+            await send(session, context, chat_id, build_collect_dup_text(session), COLLECT_DUP_KEYBOARD)
+            return
+
+        session["collect"].append(value)
+        await send(session, context, chat_id, build_collect_text(session), COLLECT_KEYBOARD)
+        return
+
     session["data"][FIELDS[step]] = value
 
     # 정리 내용만 검사한다. 서식이 들어가는 칸은 여기 하나뿐이다 (명세서 §15-2).
@@ -2941,6 +3176,16 @@ async def reshow(session, context, chat_id):
     저장을 시도한 세션은 부르는 쪽에서 미리 걸러내므로, 여기서 do_save가 다시
     돌아 노션에 중복 저장될 일은 없다. 이 함수는 화면만 다룬다.
     """
+    if session["collect"] is not None:
+        # 긴 글 이어받기 화면에 서 있던 경우다. 보통의 단계 화면을 띄우면
+        # 지금까지 모아 둔 글을 저장할 방법이 사라진다.
+        if session["collect_dup"] is not None:
+            # 중복 확인 화면까지 서 있던 경우다. 이어받기 화면을 띄우면
+            # 중복 여부를 고를 방법이 사라진다.
+            await send(session, context, chat_id, build_collect_dup_text(session), COLLECT_DUP_KEYBOARD)
+            return
+        await send(session, context, chat_id, build_collect_text(session), COLLECT_KEYBOARD)
+        return
     if session["damage"] is not None:
         # 손상 확인 화면(명세서 §15-2)에 서 있던 경우다. 보통의 단계 화면을 띄우면
         # [🔁 그래도 저장]을 고를 방법이 사라진다.
