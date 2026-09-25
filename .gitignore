@@ -21,3 +21,6 @@ pending_records.json.broken
 
 # 템플릿 연결
 template_builder/
+
+# 유료 템플릿 인계 문서 (비공개)
+NOTION_TEMPLATE_HANDOFF.md
